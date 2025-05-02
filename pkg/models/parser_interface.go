@@ -1,14 +1,13 @@
-package parser
+package models
 
 import (
 	"code-telescope/internal/config"
-	"code-telescope/pkg/models"
 )
 
 // Parser определяет интерфейс для парсеров различных языков программирования
 type Parser interface {
 	// Parse разбирает файл и извлекает его структуру
-	Parse(fileMetadata *models.FileMetadata) (*models.CodeStructure, error)
+	Parse(fileMetadata *FileMetadata) (*FileStructure, error)
 
 	// GetSupportedExtensions возвращает список поддерживаемых расширений файлов
 	GetSupportedExtensions() []string

@@ -261,9 +261,18 @@
 ### Импорты/Экспорты
 ```
 Импорты:
-- fmt из "fmt"
+- context из "context"
 - os из "os"
+- filepath из "path/filepath"
+- strings из "strings"
+- time из "time"
 - config из "code-telescope/internal/config"
+- filesystem из "code-telescope/internal/filesystem"
+- llm из "code-telescope/internal/llm"
+- logger из "code-telescope/internal/logger"
+- markdown из "code-telescope/internal/markdown"
+- parser из "code-telescope/internal/parser"
+- models из "code-telescope/pkg/models"
 
 Экспорты:
 - Структура Orchestrator
@@ -276,17 +285,23 @@
 - **Поля**:
   - config: *config.Config - объект конфигурации
   - verbose: bool - флаг подробного вывода
+  - scanner: *filesystem.Scanner - модуль файловой системы
+  - parserFactory: *parser.LanguageFactory - фабрика парсеров
+  - llmProvider: llm.LLMProvider - провайдер ЛЛМ
+  - promptBuilder: *llm.PromptBuilder - конструктор промптов
+  - mdGenerator: *markdown.Generator - генератор Markdown
 - **Описание**: Оркестратор координирует весь процесс генерации карты кода.
 
 ### Публичные методы
 
-#### func New(config *config.Config, verbose bool) *Orchestrator
+#### func New(config *config.Config, verbose bool) (*Orchestrator, error)
 - **Входные параметры**: 
   - config: *config.Config - объект конфигурации
   - verbose: bool - флаг подробного вывода
 - **Выходные параметры**: 
   - *Orchestrator - экземпляр оркестратора
-- **Описание**: Создает новый экземпляр оркестратора с указанной конфигурацией.
+  - error - ошибка при инициализации
+- **Описание**: Создает новый экземпляр оркестратора с указанной конфигурацией и инициализирует все необходимые компоненты.
 
 #### func (o *Orchestrator) GenerateCodeMap(projectPath string) (string, error)
 - **Входные параметры**: 
@@ -295,6 +310,10 @@
   - string - сгенерированная markdown-карта кода
   - error - ошибка при генерации
 - **Описание**: Координирует весь процесс генерации карты кода, включая сканирование файловой системы, парсинг кода, взаимодействие с ЛЛМ и генерацию Markdown.
+- **Требует доработки**: 
+  1. Существует несоответствие между типами CodeStructure и FileStructure, что вызывает ошибки при обработке результатов парсинга.
+  2. Неправильная обработка методов при отправке запросов к ЛЛМ.
+  3. Необходима корректная группировка методов по принадлежности к типам.
 
 #### func (o *Orchestrator) SaveCodeMap(codeMap string, outputPath string) error
 - **Входные параметры**: 
@@ -364,6 +383,8 @@
 - fmt из "fmt"
 - filepath из "path/filepath"
 - config из "code-telescope/internal/config"
+- languages из "code-telescope/internal/parser/languages"
+- models из "code-telescope/pkg/models"
 
 Экспорты:
 - Структура LanguageFactory
@@ -375,9 +396,10 @@
 #### type LanguageFactory struct
 - **Поля**:
   - config: *config.Config - объект конфигурации
-  - parsers: map[string]Parser - словарь парсеров по языкам
+  - parsers: map[string]models.Parser - словарь парсеров по языкам
   - extToParser: map[string]string - словарь для сопоставления расширений с языками
 - **Описание**: Фабрика для создания парсеров разных языков программирования.
+- **Требует доработки**: Существует несоответствие между моделью Parser в pkg/models и фактической реализацией парсеров в internal/parser/languages.
 
 ### Публичные методы
 
@@ -386,23 +408,25 @@
   - cfg: *config.Config - объект конфигурации
 - **Выходные параметры**: 
   - *LanguageFactory - экземпляр фабрики парсеров
-- **Описание**: Создает новый экземпляр фабрики парсеров с указанной конфигурацией.
+- **Описание**: Создает новый экземпляр фабрики парсеров с указанной конфигурацией и регистрирует все доступные парсеры.
 
 #### func (lf *LanguageFactory) registerParsers()
-- **Описание**: Регистрирует все поддерживаемые парсеры.
+- **Описание**: Регистрирует все поддерживаемые парсеры. В текущей реализации регистрируется только парсер для Go.
+- **Требует доработки**: Необходимо добавить парсеры для других языков (JavaScript, Python).
 
-#### func (lf *LanguageFactory) registerParser(parser Parser)
+#### func (lf *LanguageFactory) registerParser(parser models.Parser)
 - **Входные параметры**: 
-  - parser: Parser - экземпляр парсера
-- **Описание**: Регистрирует парсер в фабрике.
+  - parser: models.Parser - экземпляр парсера
+- **Описание**: Регистрирует парсер в фабрике, связывая его с поддерживаемыми расширениями файлов.
 
-#### func (lf *LanguageFactory) GetParserForFile(filePath string) (Parser, error)
+#### func (lf *LanguageFactory) GetParserForFile(filePath string) (models.Parser, error)
 - **Входные параметры**: 
   - filePath: string - путь к файлу
 - **Выходные параметры**: 
-  - Parser - подходящий парсер
+  - models.Parser - подходящий парсер
   - error - ошибка при получении парсера
 - **Описание**: Возвращает подходящий парсер для указанного файла на основе его расширения.
+- **Требует доработки**: Необходимо обеспечить корректную обработку всех поддерживаемых типов файлов.
 
 #### func (lf *LanguageFactory) GetSupportedLanguages() []string
 - **Выходные параметры**: 

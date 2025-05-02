@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"code-telescope/internal/models"
+	"code-telescope/pkg/models"
 )
 
 // PromptBuilder предоставляет методы для создания промптов для различных задач
@@ -86,7 +86,7 @@ func (pb *PromptBuilder) BuildFileSummaryPrompt(fileInfo models.FileStructure) s
 Предоставь только описание файла без дополнительного форматирования, пояснений или вступлений.`
 
 	return fmt.Sprintf(templateStr,
-		fileInfo.Name,
+		fileInfo.Path,
 		fileInfo.Language,
 		imports,
 		exports.String(),

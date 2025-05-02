@@ -5,19 +5,18 @@ import (
 	"strings"
 
 	"code-telescope/internal/config"
-	"code-telescope/internal/parser"
 	"code-telescope/pkg/models"
 )
 
 // GoParser реализует парсер для языка Go
 type GoParser struct {
-	*parser.BaseParser
+	Config *config.Config
 }
 
 // NewGoParser создает новый экземпляр парсера Go
 func NewGoParser(cfg *config.Config) *GoParser {
 	return &GoParser{
-		BaseParser: parser.NewBaseParser(cfg),
+		Config: cfg,
 	}
 }
 

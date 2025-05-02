@@ -32,6 +32,7 @@ type ParserConfig struct {
 type LLMConfig struct {
 	Provider    string  `yaml:"provider"`
 	Model       string  `yaml:"model"`
+	APIKey      string  `yaml:"api_key"`
 	Temperature float64 `yaml:"temperature"`
 	MaxTokens   int     `yaml:"max_tokens"`
 	BatchSize   int     `yaml:"batch_size"`
@@ -88,6 +89,7 @@ func DefaultConfig() *Config {
 		LLM: LLMConfig{
 			Provider:    "openai",
 			Model:       "gpt-4",
+			APIKey:      os.Getenv("LLM_API_KEY"),
 			Temperature: 0.3,
 			MaxTokens:   1000,
 			BatchSize:   5,

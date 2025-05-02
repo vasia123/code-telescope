@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"code-telescope/internal/config"
 	"code-telescope/internal/orchestrator"
@@ -14,96 +13,73 @@ import (
 var Version = "dev"
 
 func main() {
-	// Парсинг аргументов командной строки
-	projectPath := flag.String("project-path", ".", "Путь к директории проекта")
-	configPath := flag.String("config", "", "Путь к конфигурационному файлу")
-	outputPath := flag.String("output", "code-map.md", "Путь к выходному Markdown-файлу")
-	llmProvider := flag.String("llm-provider", "", "Провайдер ЛЛМ (openai, anthropic)")
+	// Парсим аргументы командной строки
+	configPath := flag.String("config", "", "Путь к файлу конфигурации")
+	outputPath := flag.String("output", "code_map.md", "Путь для сохранения карты кода")
 	verbose := flag.Bool("verbose", false, "Подробный вывод")
-	showVersion := flag.Bool("version", false, "Показать версию программы")
-
 	flag.Parse()
 
-	// Показать версию и выйти, если указан флаг
-	if *showVersion {
-		fmt.Printf("Code Telescope версия %s\n", Version)
-		os.Exit(0)
+	// Проверяем наличие пути к проекту
+	args := flag.Args()
+	if len(args) < 1 {
+		fmt.Println("Необходимо указать путь к проекту для анализа")
+		fmt.Println("Использование: codetelescope [опции] <путь_к_проекту>")
+		flag.PrintDefaults()
+		os.Exit(1)
 	}
+	projectPath := args[0]
 
-	// Загрузка конфигурации
+	// Загружаем конфигурацию
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка загрузки конфигурации: %v\n", err)
+		fmt.Printf("Ошибка загрузки конфигурации: %s\n", err)
 		os.Exit(1)
 	}
 
-	// Переопределение параметров из командной строки
-	if *llmProvider != "" {
-		cfg.LLM.Provider = *llmProvider
-	}
-
-	// Подготовка абсолютных путей
-	absProjectPath, err := filepath.Abs(*projectPath)
+	// Создаем оркестратор
+	orch, err := orchestrator.New(cfg, *verbose)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка получения абсолютного пути проекта: %v\n", err)
+		fmt.Printf("Ошибка инициализации оркестратора: %s\n", err)
 		os.Exit(1)
 	}
 
-	absOutputPath, err := filepath.Abs(*outputPath)
+	// Генерируем карту кода
+	if *verbose {
+		fmt.Println("Начало генерации карты кода...")
+	}
+
+	codeMap, err := orch.GenerateCodeMap(projectPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка получения абсолютного пути вывода: %v\n", err)
+		fmt.Printf("Ошибка генерации карты кода: %s\n", err)
 		os.Exit(1)
 	}
 
-	// Создание экземпляра оркестратора
-	orchestr := orchestrator.New(cfg, *verbose)
-
-	// Запуск процесса генерации карты кода
-	fmt.Printf("Генерация карты кода для проекта: %s\n", absProjectPath)
-	codeMap, err := orchestr.GenerateCodeMap(absProjectPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка генерации карты кода: %v\n", err)
+	// Сохраняем результат
+	if err := orch.SaveCodeMap(codeMap, *outputPath); err != nil {
+		fmt.Printf("Ошибка сохранения карты кода: %s\n", err)
 		os.Exit(1)
 	}
 
-	// Сохранение результата
-	if err := orchestr.SaveCodeMap(codeMap, absOutputPath); err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка сохранения карты кода: %v\n", err)
-		os.Exit(1)
+	if *verbose {
+		fmt.Printf("Карта кода успешно сохранена в файл: %s\n", *outputPath)
 	}
-
-	fmt.Printf("Карта кода успешно сгенерирована и сохранена в: %s\n", absOutputPath)
 }
 
-// Загрузка конфигурации из файла или использование значений по умолчанию
 func loadConfig(configPath string) (*config.Config, error) {
+	// Если путь к конфигурации не указан, используем конфигурацию по умолчанию
 	if configPath == "" {
-		// Поиск конфигурации в стандартных местах
-		defaultPaths := []string{
-			"./configs/default.yaml",
-			"./config.yaml",
-			"./code-telescope.yaml",
-		}
-
-		for _, path := range defaultPaths {
-			if _, err := os.Stat(path); err == nil {
-				configPath = path
-				break
-			}
-		}
+		return config.DefaultConfig(), nil
 	}
 
-	var cfg *config.Config
-	var err error
+	// Проверяем существование файла
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("файл конфигурации не найден: %s", configPath)
+	}
 
-	if configPath != "" {
-		cfg, err = config.LoadConfig(configPath)
-		if err != nil {
-			return nil, fmt.Errorf("не удалось загрузить конфигурацию из %s: %w", configPath, err)
-		}
-	} else {
-		// Использование конфигурации по умолчанию
-		cfg = config.DefaultConfig()
+	// Загружаем конфигурацию из файла
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		return nil, err
 	}
 
 	return cfg, nil
