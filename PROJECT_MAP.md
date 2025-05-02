@@ -488,6 +488,56 @@
   - error - ошибка при парсинге
 - **Описание**: Разбирает файл Go и извлекает его структуру: пакет, импорты, типы, функции, методы и переменные.
 
+## internal/parser/languages/javascript.go
+
+### Импорты/Экспорты
+```
+Импорты:
+- os из "os"
+- strings из "strings"
+- config из "code-telescope/internal/config"
+- models из "code-telescope/pkg/models"
+- utils из "code-telescope/pkg/utils"
+
+Экспорты:
+- Структура JavaScriptParser
+- Функция NewJavaScriptParser
+```
+
+### Публичные типы и структуры
+
+#### type JavaScriptParser struct
+- **Поля**:
+  - Config: *config.Config - объект конфигурации
+- **Описание**: Реализует парсер для языка JavaScript.
+
+### Публичные методы
+
+#### func NewJavaScriptParser(cfg *config.Config) *JavaScriptParser
+- **Входные параметры**: 
+  - cfg: *config.Config - объект конфигурации
+- **Выходные параметры**: 
+  - *JavaScriptParser - экземпляр парсера JavaScript
+- **Описание**: Создает новый экземпляр парсера для языка JavaScript.
+
+#### func (p *JavaScriptParser) GetLanguageName() string
+- **Выходные параметры**: 
+  - string - название языка
+- **Описание**: Возвращает название языка программирования (JavaScript).
+
+#### func (p *JavaScriptParser) GetSupportedExtensions() []string
+- **Выходные параметры**: 
+  - []string - поддерживаемые расширения
+- **Описание**: Возвращает список поддерживаемых расширений файлов (.js, .jsx, .mjs).
+
+#### func (p *JavaScriptParser) Parse(fileMetadata *models.FileMetadata) (*models.CodeStructure, error)
+- **Входные параметры**: 
+  - fileMetadata: *models.FileMetadata - метаданные файла
+- **Выходные параметры**: 
+  - *models.CodeStructure - структура кода
+  - error - ошибка при парсинге
+- **Описание**: Разбирает файл JavaScript и извлекает его структуру: импорты, экспорты, функции, классы и методы.
+
 ## internal/llm/llm.go
 
 ### Импорты/Экспорты
@@ -1013,5 +1063,55 @@
   - Content: string - содержимое файла
   - Description: string - описание файла
 - **Описание**: Представляет структурную информацию о файле кода.
+
+## pkg/models/code_structure_converter.go
+
+### Импорты/Экспорты
+```
+Импорты:
+- Нет импортов
+
+Экспорты:
+- Функция ConvertToFileStructure
+- Функция joinStrings
+```
+
+### Публичные методы
+
+#### func ConvertToFileStructure(cs *CodeStructure) FileStructure
+- **Входные параметры**: 
+  - cs: *CodeStructure - структура кода для преобразования
+- **Выходные параметры**: 
+  - FileStructure - преобразованная структура файла
+- **Описание**: Преобразует CodeStructure в FileStructure для совместимости с модулем генерации Markdown, обеспечивая правильное преобразование импортов, экспортов, методов и типов.
+
+#### func joinStrings(strings []string, separator string) string
+- **Входные параметры**: 
+  - strings: []string - массив строк для объединения
+  - separator: string - разделитель между строками
+- **Выходные параметры**: 
+  - string - объединенная строка
+- **Описание**: Вспомогательная функция для объединения строк с указанным разделителем.
+
+## pkg/utils/parser_utils.go
+
+### Импорты/Экспорты
+```
+Импорты:
+- Нет импортов
+
+Экспорты:
+- Функция FindMatchingCloseBracket
+```
+
+### Публичные методы
+
+#### func FindMatchingCloseBracket(str string, openPos int) int
+- **Входные параметры**: 
+  - str: string - строка для анализа
+  - openPos: int - позиция открывающей скобки
+- **Выходные параметры**: 
+  - int - позиция закрывающей скобки или -1, если не найдена
+- **Описание**: Находит позицию закрывающей скобки, соответствующей открывающей скобке в указанной позиции. Учитывает вложенность скобок. Эта функция используется различными парсерами для обработки синтаксиса.
 
 *Примечание: Этот документ отражает текущее состояние проекта и будет обновляться по мере его развития.* 

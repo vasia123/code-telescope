@@ -33,9 +33,11 @@ func NewLanguageFactory(cfg *config.Config) *LanguageFactory {
 func (lf *LanguageFactory) registerParsers() {
 	// Регистрируем парсер для Go
 	lf.registerParser(languages.NewGoParser(lf.config))
-	
+
+	// Регистрируем парсер для JavaScript
+	lf.registerParser(languages.NewJavaScriptParser(lf.config))
+
 	// TODO: Добавить парсеры для других языков в будущем
-	// lf.registerParser(NewJavaScriptParser(lf.config))
 	// lf.registerParser(NewPythonParser(lf.config))
 }
 

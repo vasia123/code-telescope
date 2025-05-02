@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,41 +130,56 @@ func (o *Orchestrator) GenerateCodeMap(projectPath string) (string, error) {
 		if len(publicMethods) > 0 {
 			logger.Debugf("Найдено %d публичных методов в файле %s", len(publicMethods), file.Path)
 
-			// Конвертируем методы в формат для ЛЛМ
-			methodInfos := make([]models.MethodInfo, 0, len(publicMethods))
-			for _, method := range publicMethods {
-				paramStrings := make([]string, 0, len(method.Parameters))
-				for _, param := range method.Parameters {
-					paramStrings = append(paramStrings, param.Name+": "+param.Type)
-				}
-
-				methodInfo := models.MethodInfo{
-					Name:      method.Name,
-					Signature: method.Name + "(" + strings.Join(paramStrings, ", ") + ") " + method.ReturnType,
-					// Тело метода и другие поля могут быть добавлены при необходимости
-				}
-				methodInfos = append(methodInfos, methodInfo)
+			// Если методов много, обрабатываем их пакетами
+			batchSize := o.config.LLM.BatchSize
+			if batchSize <= 0 {
+				batchSize = 5 // Значение по умолчанию
 			}
 
-			// Получаем описания методов через ЛЛМ (пакетная обработка)
-			if len(methodInfos) > 0 {
-				logger.WithField("file", file.Path).Debug("Генерация описаний методов через ЛЛМ")
-
-				// Если методов много, обрабатываем их пакетами
-				batchSize := o.config.LLM.BatchSize
-				if batchSize <= 0 {
-					batchSize = 5 // Значение по умолчанию
+			logger.Debugf("Обработка методов пакетами по %d", batchSize)
+			for i := 0; i < len(publicMethods); i += batchSize {
+				end := i + batchSize
+				if end > len(publicMethods) {
+					end = len(publicMethods)
 				}
 
-				logger.Debugf("Обработка методов пакетами по %d", batchSize)
-				for i := 0; i < len(methodInfos); i += batchSize {
-					end := i + batchSize
-					if end > len(methodInfos) {
-						end = len(methodInfos)
+				// Формируем пакет методов для ЛЛМ
+				batchMethods := make([]models.MethodInfo, 0, end-i)
+				for j := i; j < end; j++ {
+					method := publicMethods[j]
+
+					// Формируем параметры метода для промпта
+					paramStrings := make([]string, 0, len(method.Parameters))
+					for _, param := range method.Parameters {
+						paramStr := param.Name
+						if param.Type != "" {
+							paramStr += ": " + param.Type
+						}
+						paramStrings = append(paramStrings, paramStr)
 					}
 
-					batchMethods := methodInfos[i:end]
-					prompt := o.promptBuilder.BuildBatchMethodPrompt(batchMethods, "")
+					// Создаем информацию о методе для ЛЛМ
+					methodInfo := models.MethodInfo{
+						Name:      method.Name,
+						Signature: method.Name + "(" + strings.Join(paramStrings, ", ") + ")",
+					}
+
+					// Добавляем возвращаемое значение, если оно есть
+					if method.ReturnType != "" {
+						methodInfo.Signature += " " + method.ReturnType
+					}
+
+					batchMethods = append(batchMethods, methodInfo)
+				}
+
+				// Формируем контекст файла
+				fileContext := fmt.Sprintf("Файл: %s\nЯзык: %s\n",
+					codeStructure.Metadata.Path,
+					codeStructure.Metadata.LanguageName())
+
+				// Получаем описания методов через ЛЛМ
+				if len(batchMethods) > 0 {
+					prompt := o.promptBuilder.BuildBatchMethodPrompt(batchMethods, fileContext)
 
 					llmRequest := llm.LLMRequest{
 						Prompt:      prompt,
@@ -184,27 +200,28 @@ func (o *Orchestrator) GenerateCodeMap(projectPath string) (string, error) {
 					// Добавляем описания к методам
 					logger.Debug("Применение описаний к методам")
 					for j := i; j < end && j-i < len(batchMethods); j++ {
-						if j < len(publicMethods) {
-							methodInfo := batchMethods[j-i]
-							description, ok := methodDescriptions[methodInfo.Name]
-							if ok {
-								logger.Debugf("Добавлено описание для метода %s", methodInfo.Name)
-								publicMethods[j].Description = description
-							} else {
-								logger.Warnf("Не удалось получить описание для метода %s", methodInfo.Name)
-							}
+						methodInfo := batchMethods[j-i]
+						description, ok := methodDescriptions[methodInfo.Name]
+						if ok {
+							logger.Debugf("Добавлено описание для метода %s", methodInfo.Name)
+							publicMethods[j-i].Description = description
+						} else {
+							logger.Warnf("Не удалось получить описание для метода %s", methodInfo.Name)
 						}
 					}
 				}
 			}
 		}
 
+		// Преобразуем CodeStructure в FileStructure
+		logger.WithField("file", file.Path).Debug("Преобразование CodeStructure в FileStructure")
+		fileStructure := models.ConvertToFileStructure(codeStructure)
+
 		// Добавляем структуру файла в коллекцию
-		logger.WithField("file", file.Path).Debug("Добавление структуры файла в коллекцию")
-		fileStructures = append(fileStructures, codeStructure)
+		fileStructures = append(fileStructures, fileStructure)
 	}
 
-	// Шаг 3: Генерация Markdown с использованием нового модуля
+	// Шаг 3: Генерация Markdown с использованием генератора
 	logger.Info("Генерация Markdown-документации")
 	projectName := filepath.Base(projectPath)
 	codeMapContent := o.mdGenerator.GenerateCodeMap(fileStructures, projectName)

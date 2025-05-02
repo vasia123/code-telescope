@@ -6,6 +6,7 @@ import (
 
 	"code-telescope/internal/config"
 	"code-telescope/pkg/models"
+	"code-telescope/pkg/utils"
 )
 
 // GoParser реализует парсер для языка Go
@@ -196,6 +197,24 @@ func (p *GoParser) parseTypesAndMethods(lines []string, cs *models.CodeStructure
 							},
 						}
 
+						// Извлекаем параметры и возвращаемые значения
+						paramStartPos := methodNameEnd
+						paramEndPos := utils.FindMatchingCloseBracket(trimmedLine, paramStartPos)
+
+						if paramEndPos > paramStartPos {
+							paramString := trimmedLine[paramStartPos+1 : paramEndPos]
+							method.Parameters = p.parseParameters(paramString)
+
+							// Проверяем наличие возвращаемых значений
+							returnTypeStart := paramEndPos + 1
+							if returnTypeStart < len(trimmedLine) {
+								returnType := strings.TrimSpace(trimmedLine[returnTypeStart:])
+								if returnType != "" {
+									method.ReturnType = returnType
+								}
+							}
+						}
+
 						cs.AddMethod(method)
 
 						// Добавляем метод в экспорты, если он публичный
@@ -240,6 +259,24 @@ func (p *GoParser) parseFunctions(lines []string, cs *models.CodeStructure) {
 						StartLine: lineNum + 1,
 						EndLine:   lineNum + 1,
 					},
+				}
+
+				// Извлекаем параметры и возвращаемые значения
+				paramStartPos := funcNameEnd
+				paramEndPos := utils.FindMatchingCloseBracket(trimmedLine, paramStartPos)
+
+				if paramEndPos > paramStartPos {
+					paramString := trimmedLine[paramStartPos+1 : paramEndPos]
+					method.Parameters = p.parseParameters(paramString)
+
+					// Проверяем наличие возвращаемых значений
+					returnTypeStart := paramEndPos + 1
+					if returnTypeStart < len(trimmedLine) {
+						returnType := strings.TrimSpace(trimmedLine[returnTypeStart:])
+						if returnType != "" {
+							method.ReturnType = returnType
+						}
+					}
 				}
 
 				cs.AddMethod(method)
@@ -446,4 +483,43 @@ func (p *GoParser) parseVariablesAndConstants(lines []string, cs *models.CodeStr
 			}
 		}
 	}
+}
+
+// parseParameters разбирает строку параметров и создает массив Parameter
+func (p *GoParser) parseParameters(paramString string) []*models.Parameter {
+	if strings.TrimSpace(paramString) == "" {
+		return []*models.Parameter{}
+	}
+
+	params := make([]*models.Parameter, 0)
+	paramParts := strings.Split(paramString, ",")
+
+	for _, part := range paramParts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		// Разделяем имя и тип
+		parts := strings.Fields(part)
+		if len(parts) >= 2 {
+			// Формат: name type [default]
+			param := &models.Parameter{
+				Name:       parts[0],
+				Type:       parts[1],
+				IsRequired: true, // По умолчанию все параметры обязательны в Go
+			}
+			params = append(params, param)
+		} else if len(parts) == 1 {
+			// Если только один токен, это может быть только тип (анонимный параметр)
+			param := &models.Parameter{
+				Name:       "",
+				Type:       parts[0],
+				IsRequired: true,
+			}
+			params = append(params, param)
+		}
+	}
+
+	return params
 }

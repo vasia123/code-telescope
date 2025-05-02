@@ -7,7 +7,7 @@ import (
 // Parser определяет интерфейс для парсеров различных языков программирования
 type Parser interface {
 	// Parse разбирает файл и извлекает его структуру
-	Parse(fileMetadata *FileMetadata) (*FileStructure, error)
+	Parse(fileMetadata *FileMetadata) (*CodeStructure, error)
 
 	// GetSupportedExtensions возвращает список поддерживаемых расширений файлов
 	GetSupportedExtensions() []string
