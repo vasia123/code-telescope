@@ -30,6 +30,29 @@ type OpenAIConfig struct {
 	Timeout int    `json:"timeout_seconds"`
 }
 
+// SetHTTPClient устанавливает HTTP клиент для провайдера (используется для тестирования)
+func (p *OpenAIProvider) SetHTTPClient(client interface{}) {
+	if httpClient, ok := client.(interface {
+		Do(*http.Request) (*http.Response, error)
+	}); ok {
+		p.httpClient = &http.Client{
+			Transport: &openaiTransport{client: httpClient},
+		}
+	}
+}
+
+// openaiTransport реализует http.RoundTripper, используя клиент с методом Do
+type openaiTransport struct {
+	client interface {
+		Do(*http.Request) (*http.Response, error)
+	}
+}
+
+// RoundTrip выполняет HTTP запрос
+func (t *openaiTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return t.client.Do(req)
+}
+
 // NewOpenAIProvider создает новый экземпляр OpenAIProvider
 func NewOpenAIProvider(config map[string]interface{}) (LLMProvider, error) {
 	// Преобразование map в структуру конфигурации

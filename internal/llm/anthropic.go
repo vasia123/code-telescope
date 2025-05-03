@@ -30,6 +30,29 @@ type AnthropicConfig struct {
 	Timeout int    `json:"timeout_seconds"`
 }
 
+// SetHTTPClient устанавливает HTTP клиент для провайдера (используется для тестирования)
+func (p *AnthropicProvider) SetHTTPClient(client interface{}) {
+	if httpClient, ok := client.(interface {
+		Do(*http.Request) (*http.Response, error)
+	}); ok {
+		p.httpClient = &http.Client{
+			Transport: &anthropicTransport{client: httpClient},
+		}
+	}
+}
+
+// anthropicTransport реализует http.RoundTripper, используя клиент с методом Do
+type anthropicTransport struct {
+	client interface {
+		Do(*http.Request) (*http.Response, error)
+	}
+}
+
+// RoundTrip выполняет HTTP запрос
+func (t *anthropicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return t.client.Do(req)
+}
+
 // NewAnthropicProvider создает новый экземпляр AnthropicProvider
 func NewAnthropicProvider(config map[string]interface{}) (LLMProvider, error) {
 	// Преобразование map в структуру конфигурации

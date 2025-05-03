@@ -397,6 +397,22 @@ func (p *JavaScriptParser) parseClassesAndMethods(lines []string, cs *models.Cod
 					},
 				}
 
+				// Проверяем наследование (extends)
+				if strings.Contains(trimmedLine, " extends ") {
+					extendsStartPos := strings.Index(trimmedLine, " extends ") + len(" extends ")
+					extendsEndPos := strings.Index(trimmedLine[extendsStartPos:], " ")
+					bracePos := strings.Index(trimmedLine[extendsStartPos:], "{")
+
+					if extendsEndPos == -1 || (bracePos != -1 && bracePos < extendsEndPos) {
+						extendsEndPos = bracePos
+					}
+
+					if extendsEndPos != -1 {
+						parentClass := trimmedLine[extendsStartPos : extendsStartPos+extendsEndPos]
+						typ.Parent = parentClass
+					}
+				}
+
 				cs.AddType(typ)
 			}
 		}

@@ -37,8 +37,10 @@ func (lf *LanguageFactory) registerParsers() {
 	// Регистрируем парсер для JavaScript
 	lf.registerParser(languages.NewJavaScriptParser(lf.config))
 
+	// Регистрируем парсер для Python
+	lf.registerParser(languages.NewPythonParser(lf.config))
+
 	// TODO: Добавить парсеры для других языков в будущем
-	// lf.registerParser(NewPythonParser(lf.config))
 }
 
 // registerParser регистрирует парсер в фабрике
