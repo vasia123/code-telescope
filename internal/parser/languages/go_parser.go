@@ -2,24 +2,18 @@ package languages
 
 import (
 	"strings"
-	"unsafe"
 
-	sitter "github.com/tree-sitter/go-tree-sitter"
+	sitter "github.com/smacker/go-tree-sitter"
+	golang_ts "github.com/smacker/go-tree-sitter/golang"
 
 	"code-telescope/internal/config"
 	"code-telescope/internal/parser"
 	"code-telescope/pkg/models"
 )
 
-// #cgo CFLAGS: -I${SRCDIR}/../../../vendor/github.com/tree-sitter/tree-sitter-go/src
-// #include <tree_sitter/parser.h>
-// extern TSLanguage *tree_sitter_go();
-import "C"
-
 // GetGoLanguage возвращает язык Go для tree-sitter
 func GetGoLanguage() *sitter.Language {
-	ptr := unsafe.Pointer(C.tree_sitter_go())
-	return sitter.NewLanguage(ptr)
+	return golang_ts.GetLanguage()
 }
 
 // GoParser реализует парсер для языка Go

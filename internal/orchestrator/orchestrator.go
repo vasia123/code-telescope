@@ -104,7 +104,7 @@ func (o *Orchestrator) GenerateCodeMap(projectPath string) (string, error) {
 		logger.WithField("file", file.Path).Debug("Обработка файла")
 
 		// Получаем парсер для текущего файла
-		parser, err := o.parserFactory.GetParserForFile(file.Path)
+		currentParser, err := o.parserFactory.GetParserForFile(file.Path)
 		if err != nil {
 			logger.WithFields(logger.Fields{
 				"file":  file.Path,
@@ -115,7 +115,7 @@ func (o *Orchestrator) GenerateCodeMap(projectPath string) (string, error) {
 
 		// Парсим файл
 		logger.WithField("file", file.Path).Debug("Парсинг файла")
-		codeStructure, err := parser.Parse(file)
+		codeStructure, err := currentParser.Parse(file)
 		if err != nil {
 			logger.WithFields(logger.Fields{
 				"file":  file.Path,

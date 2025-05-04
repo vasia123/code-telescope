@@ -330,213 +330,247 @@
 Импорты:
 - config из "code-telescope/internal/config"
 - models из "code-telescope/pkg/models"
+- github.com/tree-sitter/go-tree-sitter
 
 Экспорты:
 - Интерфейс Parser
-- Структура BaseParser
-- Структура ParseOptions
-- Функция NewBaseParser
-- Функция NewParseOptions
 ```
 
-### Публичные типы и интерфейсы
+### Публичные интерфейсы
 
-#### interface Parser
-- **Метод**: Parse(fileMetadata *models.FileMetadata) (*models.CodeStructure, error)
-- **Метод**: GetSupportedExtensions() []string
-- **Метод**: GetLanguageName() string
-- **Описание**: Интерфейс для парсеров различных языков программирования.
+#### type Parser interface
+- **Методы**:
+    - `Parse(fileMetadata *models.FileMetadata) (*models.CodeStructure, error)`: Разбирает содержимое файла и возвращает его структуру.
+    - `GetSupportedExtensions() []string`: Возвращает список расширений файлов, поддерживаемых этим парсером.
+    - `GetLanguageName() string`: Возвращает имя языка программирования, поддерживаемого этим парсером.
+    - `ParseTreeNode(node *sitter.Node, structure *models.CodeStructure, content []byte) error`: Разбирает узел дерева синтаксического анализа Tree-sitter (специфично для реализаций на Tree-sitter).
+- **Описание**: Определяет общий интерфейс для всех парсеров кода, используемых в проекте.
 
-#### type BaseParser struct
-- **Поля**:
-  - Config: *config.Config - объект конфигурации
-- **Описание**: Содержит общую функциональность для всех парсеров.
+## internal/parser/treesitter_parser.go
 
-#### type ParseOptions struct
-- **Поля**:
-  - IncludePrivate: bool - включать приватные методы и свойства
-  - Depth: int - глубина парсинга AST
-  - LanguageSpecific: map[string]interface{} - опции специфичные для языка
-- **Описание**: Содержит опции для процесса парсинга.
+### Импорты/Экспорты
+```
+Импорты:
+- os
+- sync
+- code-telescope/pkg/models
+- github.com/tree-sitter/go-tree-sitter
 
-### Публичные методы
+Экспорты:
+- Структура TreeSitterParser
+- Функция NewTreeSitterParser
+```
 
-#### func NewBaseParser(cfg *config.Config) *BaseParser
-- **Входные параметры**: 
-  - cfg: *config.Config - объект конфигурации
+### Публичные методы и структуры
+
+#### type TreeSitterParser struct
+- **Описание**: Предоставляет базовую реализацию парсера на основе библиотеки Tree-sitter. Содержит общую логику инициализации парсера и разбора файла с использованием переданной функции `parseTreeNodeFunc`.
+
+#### func NewTreeSitterParser(language *sitter.Language, parseTreeNodeFunc func(node *sitter.Node, structure *models.CodeStructure, content []byte) error) *TreeSitterParser
+- **Входные параметры**:
+    - language: *sitter.Language - Tree-sitter язык.
+    - parseTreeNodeFunc: func(...) error - Функция для разбора узлов дерева, специфичная для конкретного языка.
 - **Выходные параметры**: 
-  - *BaseParser - экземпляр базового парсера
-- **Описание**: Создает новый экземпляр базового парсера.
+    - *TreeSitterParser - Новый экземпляр базового парсера.
+- **Описание**: Создает новый базовый парсер Tree-sitter с указанным языком и функцией разбора узлов.
 
-#### func NewParseOptions(cfg *config.Config) *ParseOptions
-- **Входные параметры**: 
-  - cfg: *config.Config - объект конфигурации
+#### func (p *TreeSitterParser) Parse(fileMetadata *models.FileMetadata) (*models.CodeStructure, error)
+- **Входные параметры**:
+    - fileMetadata: *models.FileMetadata - Метаданные файла для парсинга.
 - **Выходные параметры**: 
-  - *ParseOptions - опции парсинга
-- **Описание**: Создает новые опции парсинга на основе конфигурации.
+    - *models.CodeStructure - Извлеченная структура кода.
+    - error - Ошибка при чтении файла или парсинге.
+- **Описание**: Читает файл, выполняет парсинг с помощью Tree-sitter и вызывает специфичную для языка функцию `parseTreeNodeFunc` для обхода дерева и заполнения структуры кода.
 
 ## internal/parser/language_factory.go
 
 ### Импорты/Экспорты
 ```
 Импорты:
-- fmt из "fmt"
-- filepath из "path/filepath"
-- config из "code-telescope/internal/config"
-- languages из "code-telescope/internal/parser/languages"
-- models из "code-telescope/pkg/models"
+- fmt
+- path/filepath
+- strings
+- sync
+- code-telescope/internal/config
 
 Экспорты:
+- Тип parserConstructor (не экспортируется, используется внутри пакета)
+- Переменные parserConstructors, langToExtensions, extToLangName (не экспортируются)
+- Функция RegisterParser
 - Структура LanguageFactory
 - Функция NewLanguageFactory
 ```
 
-### Публичные типы и структуры
+### Публичные методы и структуры
+
+#### func RegisterParser(languageName string, extensions []string, constructor parserConstructor)
+- **Входные параметры**:
+    - languageName: string - Имя языка.
+    - extensions: []string - Список расширений файлов для этого языка.
+    - constructor: func(*config.Config) Parser - Функция-конструктор, создающая экземпляр парсера.
+- **Описание**: Регистрирует конструктор парсера для указанного языка и его расширений. Должна вызываться из `init()` функций пакетов конкретных языковых парсеров для разрыва циклической зависимости.
 
 #### type LanguageFactory struct
 - **Поля**:
-  - config: *config.Config - объект конфигурации
-  - parsers: map[string]models.Parser - словарь парсеров по языкам
-  - extToParser: map[string]string - словарь для сопоставления расширений с языками
-- **Описание**: Фабрика для создания парсеров разных языков программирования.
-- **Требует доработки**: Существует несоответствие между моделью Parser в pkg/models и фактической реализацией парсеров в internal/parser/languages.
-
-### Публичные методы
+    - config: *config.Config - Конфигурация приложения.
+- **Описание**: Фабрика, отвечающая за предоставление нужного парсера для файла на основе его расширения.
 
 #### func NewLanguageFactory(cfg *config.Config) *LanguageFactory
 - **Входные параметры**: 
-  - cfg: *config.Config - объект конфигурации
+    - config: *config.Config - Конфигурация приложения.
 - **Выходные параметры**: 
-  - *LanguageFactory - экземпляр фабрики парсеров
-- **Описание**: Создает новый экземпляр фабрики парсеров с указанной конфигурацией и регистрирует все доступные парсеры.
+    - *LanguageFactory - Новый экземпляр фабрики.
+- **Описание**: Создает новую фабрику парсеров.
 
-#### func (lf *LanguageFactory) registerParsers()
-- **Описание**: Регистрирует все поддерживаемые парсеры. В текущей реализации регистрируется только парсер для Go.
-- **Требует доработки**: Необходимо добавить парсеры для других языков (JavaScript, Python).
-
-#### func (lf *LanguageFactory) registerParser(parser models.Parser)
+#### func (lf *LanguageFactory) GetParserForFile(filePath string) (Parser, error)
 - **Входные параметры**: 
-  - parser: models.Parser - экземпляр парсера
-- **Описание**: Регистрирует парсер в фабрике, связывая его с поддерживаемыми расширениями файлов.
-
-#### func (lf *LanguageFactory) GetParserForFile(filePath string) (models.Parser, error)
-- **Входные параметры**: 
-  - filePath: string - путь к файлу
+    - filePath: string - Путь к файлу.
 - **Выходные параметры**: 
-  - models.Parser - подходящий парсер
-  - error - ошибка при получении парсера
-- **Описание**: Возвращает подходящий парсер для указанного файла на основе его расширения.
-- **Требует доработки**: Необходимо обеспечить корректную обработку всех поддерживаемых типов файлов.
+    - Parser - Экземпляр парсера, подходящий для файла.
+    - error - Ошибка, если парсер для данного расширения не зарегистрирован.
+- **Описание**: Определяет язык файла по расширению, находит зарегистрированный конструктор и создает (или возвращает из кэша, если реализовано) экземпляр парсера.
 
 #### func (lf *LanguageFactory) GetSupportedLanguages() []string
 - **Выходные параметры**: 
-  - []string - список поддерживаемых языков
-- **Описание**: Возвращает список поддерживаемых языков программирования.
+    - []string - Список имен зарегистрированных языков.
+- **Описание**: Возвращает список всех языков, для которых зарегистрированы парсеры.
 
 #### func (lf *LanguageFactory) GetSupportedExtensions() []string
 - **Выходные параметры**: 
-  - []string - список поддерживаемых расширений
-- **Описание**: Возвращает список поддерживаемых расширений файлов.
+    - []string - Список всех расширений, для которых зарегистрированы парсеры.
+- **Описание**: Возвращает список всех расширений файлов, поддерживаемых зарегистрированными парсерами.
 
 ## internal/parser/languages/go.go
 
 ### Импорты/Экспорты
 ```
 Импорты:
-- os из "os"
-- strings из "strings"
-- config из "code-telescope/internal/config"
-- parser из "code-telescope/internal/parser"
-- models из "code-telescope/pkg/models"
+- fmt
+- strings
+- unsafe
+- github.com/tree-sitter/go-tree-sitter
+- code-telescope/internal/config
+- code-telescope/internal/parser
+- code-telescope/pkg/models
+- C (cgo)
 
 Экспорты:
-- Структура GoParser
-- Функция NewGoParser
+- Функция GetGoLanguage
+- Структура GoParser (не экспортируется, но реализует интерфейс parser.Parser)
+- Функция NewGoParser (возвращает parser.Parser)
 ```
 
-### Публичные типы и структуры
+### Публичные методы и структуры
 
-#### type GoParser struct
-- **Поля**:
-  - *parser.BaseParser - встроенный базовый парсер
-- **Описание**: Реализует парсер для языка Go.
+#### func init()
+- **Описание**: Регистрирует `GoParser` в `parser.LanguageFactory` при инициализации пакета.
 
-### Публичные методы
+#### func GetGoLanguage() *sitter.Language
+- **Выходные параметры**: 
+    - *sitter.Language - Tree-sitter язык для Go.
+- **Описание**: Возвращает синглтон экземпляра языка Go для Tree-sitter.
 
-#### func NewGoParser(cfg *config.Config) *GoParser
+#### func NewGoParser(cfg *config.Config) parser.Parser
 - **Входные параметры**: 
-  - cfg: *config.Config - объект конфигурации
+    - cfg: *config.Config - Конфигурация.
 - **Выходные параметры**: 
-  - *GoParser - экземпляр парсера Go
-- **Описание**: Создает новый экземпляр парсера для языка Go.
+    - parser.Parser - Экземпляр парсера Go.
+- **Описание**: Создает новый парсер для языка Go, инициализируя базовый `TreeSitterParser`.
 
-#### func (p *GoParser) GetLanguageName() string
-- **Выходные параметры**: 
-  - string - название языка
-- **Описание**: Возвращает название языка программирования (Go).
-
-#### func (p *GoParser) GetSupportedExtensions() []string
-- **Выходные параметры**: 
-  - []string - поддерживаемые расширения
-- **Описание**: Возвращает список поддерживаемых расширений файлов (.go).
-
-#### func (p *GoParser) Parse(fileMetadata *models.FileMetadata) (*models.CodeStructure, error)
-- **Входные параметры**: 
-  - fileMetadata: *models.FileMetadata - метаданные файла
-- **Выходные параметры**: 
-  - *models.CodeStructure - структура кода
-  - error - ошибка при парсинге
-- **Описание**: Разбирает файл Go и извлекает его структуру: пакет, импорты, типы, функции, методы и переменные.
+#### Методы GoParser (реализация интерфейса parser.Parser)
+- `Parse(fileMetadata *models.FileMetadata) (*models.CodeStructure, error)`
+- `GetLanguageName() string`
+- `GetSupportedExtensions() []string`
+- `parseTreeNode(node *sitter.Node, structure *models.CodeStructure, content []byte) error` (не экспортируется)
+- **Описание**: Реализует методы интерфейса `Parser` для специфики языка Go, используя Tree-sitter для разбора кода.
 
 ## internal/parser/languages/javascript.go
 
 ### Импорты/Экспорты
 ```
 Импорты:
-- os из "os"
-- strings из "strings"
-- config из "code-telescope/internal/config"
-- models из "code-telescope/pkg/models"
-- utils из "code-telescope/pkg/utils"
+- fmt
+- strings
+- unsafe
+- github.com/tree-sitter/go-tree-sitter
+- code-telescope/internal/config
+- code-telescope/internal/parser
+- code-telescope/pkg/models
+- C (cgo)
 
 Экспорты:
-- Структура JavaScriptParser
-- Функция NewJavaScriptParser
+- Функция GetJavaScriptLanguage
+- Структура JavaScriptParser (не экспортируется, но реализует интерфейс parser.Parser)
+- Функция NewJavaScriptParser (возвращает parser.Parser)
 ```
 
-### Публичные типы и структуры
+### Публичные методы и структуры
 
-#### type JavaScriptParser struct
-- **Поля**:
-  - Config: *config.Config - объект конфигурации
-- **Описание**: Реализует парсер для языка JavaScript.
+#### func init()
+- **Описание**: Регистрирует `JavaScriptParser` в `parser.LanguageFactory` при инициализации пакета.
 
-### Публичные методы
+#### func GetJavaScriptLanguage() *sitter.Language
+- **Выходные параметры**: 
+    - *sitter.Language - Tree-sitter язык для JavaScript.
+- **Описание**: Возвращает синглтон экземпляра языка JavaScript для Tree-sitter.
 
-#### func NewJavaScriptParser(cfg *config.Config) *JavaScriptParser
+#### func NewJavaScriptParser(cfg *config.Config) parser.Parser
 - **Входные параметры**: 
-  - cfg: *config.Config - объект конфигурации
+    - cfg: *config.Config - Конфигурация.
 - **Выходные параметры**: 
-  - *JavaScriptParser - экземпляр парсера JavaScript
-- **Описание**: Создает новый экземпляр парсера для языка JavaScript.
+    - parser.Parser - Экземпляр парсера JavaScript.
+- **Описание**: Создает новый парсер для языка JavaScript, инициализируя базовый `TreeSitterParser`.
 
-#### func (p *JavaScriptParser) GetLanguageName() string
+#### Методы JavaScriptParser (реализация интерфейса parser.Parser)
+- `Parse(fileMetadata *models.FileMetadata) (*models.CodeStructure, error)`
+- `GetLanguageName() string`
+- `GetSupportedExtensions() []string`
+- `parseTreeNode(node *sitter.Node, structure *models.CodeStructure, content []byte) error` (не экспортируется)
+- **Описание**: Реализует методы интерфейса `Parser` для специфики языка JavaScript, используя Tree-sitter для разбора кода.
+
+## internal/parser/languages/python.go
+
+### Импорты/Экспорты
+```
+Импорты:
+- fmt
+- strings
+- unsafe
+- github.com/tree-sitter/go-tree-sitter
+- code-telescope/internal/config
+- code-telescope/internal/parser
+- code-telescope/pkg/models
+- C (cgo)
+
+Экспорты:
+- Функция GetPythonLanguage
+- Структура PythonParser (не экспортируется, но реализует интерфейс parser.Parser)
+- Функция NewPythonParser (возвращает parser.Parser)
+```
+
+### Публичные методы и структуры
+
+#### func init()
+- **Описание**: Регистрирует `PythonParser` в `parser.LanguageFactory` при инициализации пакета.
+
+#### func GetPythonLanguage() *sitter.Language
 - **Выходные параметры**: 
-  - string - название языка
-- **Описание**: Возвращает название языка программирования (JavaScript).
+    - *sitter.Language - Tree-sitter язык для Python.
+- **Описание**: Возвращает синглтон экземпляра языка Python для Tree-sitter.
 
-#### func (p *JavaScriptParser) GetSupportedExtensions() []string
-- **Выходные параметры**: 
-  - []string - поддерживаемые расширения
-- **Описание**: Возвращает список поддерживаемых расширений файлов (.js, .jsx, .mjs).
-
-#### func (p *JavaScriptParser) Parse(fileMetadata *models.FileMetadata) (*models.CodeStructure, error)
+#### func NewPythonParser(cfg *config.Config) parser.Parser
 - **Входные параметры**: 
-  - fileMetadata: *models.FileMetadata - метаданные файла
+    - cfg: *config.Config - Конфигурация.
 - **Выходные параметры**: 
-  - *models.CodeStructure - структура кода
-  - error - ошибка при парсинге
-- **Описание**: Разбирает файл JavaScript и извлекает его структуру: импорты, экспорты, функции, классы и методы.
+    - parser.Parser - Экземпляр парсера Python.
+- **Описание**: Создает новый парсер для языка Python, инициализируя базовый `TreeSitterParser`.
+
+#### Методы PythonParser (реализация интерфейса parser.Parser)
+- `Parse(fileMetadata *models.FileMetadata) (*models.CodeStructure, error)`
+- `GetLanguageName() string`
+- `GetSupportedExtensions() []string`
+- `parseTreeNode(node *sitter.Node, structure *models.CodeStructure, content []byte) error` (не экспортируется)
+- **Описание**: Реализует методы интерфейса `Parser` для специфики языка Python, используя Tree-sitter для разбора кода.
 
 ## internal/llm/llm.go
 

@@ -1,4 +1,4 @@
-.PHONY: build clean test lint run help install-deps
+.PHONY: build clean test lint run help install-deps install-treesitter
 
 # Основные переменные
 BINARY_NAME=code-telescope
@@ -55,4 +55,4 @@ install-deps:
 	@echo "Установка зависимостей..."
 	@go mod tidy
 	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-	@echo "Установка завершена." 
+	@echo "Установка завершена."

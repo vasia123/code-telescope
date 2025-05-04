@@ -1,24 +1,53 @@
 package languages
 
 import (
-	"os"
+	"fmt"
 	"strings"
 
+	sitter "github.com/smacker/go-tree-sitter"
+	"github.com/smacker/go-tree-sitter/javascript"
+
 	"code-telescope/internal/config"
+	"code-telescope/internal/parser"
 	"code-telescope/pkg/models"
-	"code-telescope/pkg/utils"
 )
 
-// JavaScriptParser реализует парсер для языка JavaScript
+// jsLanguage синглтон для языка JavaScript
+var jsLanguage *sitter.Language
+
+func init() {
+	jsLanguage = javascript.GetLanguage()
+
+	// Регистрация парсера
+	extensions := []string{".js", ".jsx", ".mjs", ".cjs"}
+	parser.RegisterParser("JavaScript", extensions, func(cfg *config.Config) parser.Parser {
+		return NewJavaScriptParser(cfg)
+	})
+}
+
+// GetJavaScriptLanguage возвращает инициализированный язык JavaScript для tree-sitter
+func GetJavaScriptLanguage() *sitter.Language {
+	return jsLanguage
+}
+
+// JavaScriptParser реализует интерфейс parser.Parser для языка JavaScript
 type JavaScriptParser struct {
-	Config *config.Config
+	baseParser *parser.TreeSitterParser
+	config     *config.Config
 }
 
 // NewJavaScriptParser создает новый экземпляр парсера JavaScript
-func NewJavaScriptParser(cfg *config.Config) *JavaScriptParser {
-	return &JavaScriptParser{
-		Config: cfg,
+func NewJavaScriptParser(cfg *config.Config) parser.Parser { // Возвращаем интерфейс
+	jsParser := &JavaScriptParser{
+		config: cfg,
 	}
+	jsParser.baseParser = parser.NewTreeSitterParser(GetJavaScriptLanguage(), jsParser.ParseTreeNode)
+	return jsParser
+}
+
+// Parse вызывает базовый парсер
+func (p *JavaScriptParser) Parse(fileMetadata *models.FileMetadata) (*models.CodeStructure, error) {
+	return p.baseParser.Parse(fileMetadata)
 }
 
 // GetLanguageName возвращает название языка программирования
@@ -28,503 +57,540 @@ func (p *JavaScriptParser) GetLanguageName() string {
 
 // GetSupportedExtensions возвращает список поддерживаемых расширений файлов
 func (p *JavaScriptParser) GetSupportedExtensions() []string {
-	return []string{".js", ".jsx", ".mjs"}
+	return []string{".js", ".jsx", ".mjs", ".cjs"}
 }
 
-// Parse разбирает файл JavaScript и извлекает его структуру
-func (p *JavaScriptParser) Parse(fileMetadata *models.FileMetadata) (*models.CodeStructure, error) {
-	// Создаем пустую структуру кода
-	codeStructure := models.NewCodeStructure(fileMetadata)
+// ParseTreeNode разбирает узлы дерева JavaScript кода
+func (p *JavaScriptParser) ParseTreeNode(node *sitter.Node, structure *models.CodeStructure, content []byte) error {
+	// Рекурсивно обходим дочерние узлы
+	for i := 0; i < int(node.ChildCount()); i++ {
+		child := node.Child(i)
+		switch child.Type() {
+		case "import_statement":
+			p.parseImport(child, structure, content)
+		case "export_statement":
+			p.parseExport(child, structure, content)
+		case "function_declaration", "generator_function_declaration":
+			p.parseFunction(child, structure, content, false) // isMethod = false
+		case "class_declaration":
+			p.parseClass(child, structure, content)
+		case "variable_declaration": // var foo = ...
+			p.parseVariableOrLexicalDeclaration(child, structure, content)
+		case "lexical_declaration": // let foo = ..., const bar = ...
+			p.parseVariableOrLexicalDeclaration(child, structure, content)
+		default:
+			// Рекурсивно обходим узлы, которые могут содержать нужные декларации
+			if child.ChildCount() > 0 {
+				if err := p.ParseTreeNode(child, structure, content); err != nil {
+					fmt.Printf("Error parsing child node: %v\n", err) // Заменить на логгер
+				}
+			}
+		}
+	}
+	return nil
+}
 
-	// Читаем содержимое файла
-	content, err := os.ReadFile(fileMetadata.AbsolutePath)
-	if err != nil {
-		return nil, err
+// parseImport извлекает импорты
+func (p *JavaScriptParser) parseImport(node *sitter.Node, structure *models.CodeStructure, content []byte) {
+	// Находим source (строку с путем импорта)
+	sourceNode := node.ChildByFieldName("source")
+	if sourceNode == nil || sourceNode.Type() != "string" {
+		// Может быть импорт без source, например, `import "./styles.css";`
+		// Или импорт метаданных `import.meta.url`
+		// Пока игнорируем такие случаи для простоты
+		return
 	}
 
-	// Разбиваем содержимое на строки
-	lines := strings.Split(string(content), "\n")
+	// Извлекаем значение строки и удаляем кавычки
+	path := strings.Trim(sourceNode.Content(content), `"'`) // Удаляем одинарные и двойные кавычки
 
-	// Обрабатываем импорты
-	p.parseImports(lines, codeStructure)
+	// TODO: Обработать импортируемые имена (named imports, default import)
+	// Например: import { name1, name2 } from "path"
+	//           import defaultName from "path"
+	//           import * as alias from "path"
 
-	// Обрабатываем экспорты
-	p.parseExports(lines, codeStructure)
+	startLine := int(node.StartPoint().Row)
+	startCol := int(node.StartPoint().Column)
+	endLine := int(node.EndPoint().Row)
+	endCol := int(node.EndPoint().Column)
 
-	// Обрабатываем функции
-	p.parseFunctions(lines, codeStructure)
+	// Создаем объект импорта
+	imp := &models.Import{
+		Path: path,
+		Position: models.Position{
+			StartLine:   startLine + 1,
+			StartColumn: startCol + 1,
+			EndLine:     endLine + 1,
+			EndColumn:   endCol + 1,
+		},
+	}
 
-	// Обрабатываем классы и методы
-	p.parseClassesAndMethods(lines, codeStructure)
-
-	return codeStructure, nil
+	// Добавляем импорт в структуру
+	structure.AddImport(imp)
 }
 
-// parseImports извлекает импорты из JavaScript файла
-func (p *JavaScriptParser) parseImports(lines []string, cs *models.CodeStructure) {
-	for lineNum, line := range lines {
-		trimmedLine := strings.TrimSpace(line)
+// parseExport извлекает экспорты
+func (p *JavaScriptParser) parseExport(node *sitter.Node, structure *models.CodeStructure, content []byte) {
+	var exportedName string
+	var exportType string = "unknown"
+	var posNode *sitter.Node = node // Узел для определения позиции
 
-		// import defaultExport from 'module-name';
-		// import * as name from 'module-name';
-		// import { export1, export2 } from 'module-name';
-		if strings.HasPrefix(trimmedLine, "import ") {
-			pathStartPos := strings.Index(trimmedLine, "from ")
-			if pathStartPos != -1 {
-				pathStartPos += 5 // длина "from "
-				// Ищем путь в кавычках
-				if pathStartPos < len(trimmedLine) {
-					path := ""
-					if strings.Contains(trimmedLine[pathStartPos:], "'") {
-						// 'module-name'
-						startQuote := strings.Index(trimmedLine[pathStartPos:], "'") + pathStartPos
-						endQuote := strings.LastIndex(trimmedLine, "'")
-						if startQuote != -1 && endQuote > startQuote {
-							path = trimmedLine[startQuote+1 : endQuote]
-						}
-					} else if strings.Contains(trimmedLine[pathStartPos:], "\"") {
-						// "module-name"
-						startQuote := strings.Index(trimmedLine[pathStartPos:], "\"") + pathStartPos
-						endQuote := strings.LastIndex(trimmedLine, "\"")
-						if startQuote != -1 && endQuote > startQuote {
-							path = trimmedLine[startQuote+1 : endQuote]
-						}
-					}
+	// Экспорт может быть разным: export default ..., export { ... }, export const ..., export function ...
+	valueNode := node.ChildByFieldName("value")             // Для `export default value;`
+	declarationNode := node.ChildByFieldName("declaration") // Для `export const/let/var/function/class ...`
+	// Для `export ... from 'source'` - не используется, убрал чтобы не было warning
+	// sourceNode := node.ChildByFieldName("source")
 
-					if path != "" {
-						// Извлекаем имя импорта
-						alias := ""
-						if strings.Contains(trimmedLine, "* as ") {
-							// import * as name
-							asPos := strings.Index(trimmedLine, "* as ") + 5
-							spacePos := strings.Index(trimmedLine[asPos:], " ") + asPos
-							if spacePos > asPos {
-								alias = trimmedLine[asPos:spacePos]
-							}
-						} else if strings.HasPrefix(trimmedLine, "import ") && !strings.Contains(trimmedLine, "{") {
-							// import defaultExport
-							importKeywordLen := len("import ")
-							spacePos := strings.Index(trimmedLine[importKeywordLen:], " ") + importKeywordLen
-							if spacePos > importKeywordLen {
-								alias = trimmedLine[importKeywordLen:spacePos]
-							}
-						}
+	if declarationNode != nil {
+		posNode = declarationNode
+		switch declarationNode.Type() {
+		case "function_declaration", "generator_function_declaration":
+			nameNode := declarationNode.ChildByFieldName("name")
+			if nameNode != nil {
+				exportedName = nameNode.Content(content)
+				exportType = "function"
+				// Сама функция будет разобрана позже при обходе
+				p.parseFunction(declarationNode, structure, content, false)
+			}
+		case "class_declaration":
+			nameNode := declarationNode.ChildByFieldName("name")
+			if nameNode != nil {
+				exportedName = nameNode.Content(content)
+				exportType = "class"
+				// Сам класс будет разобран позже
+				p.parseClass(declarationNode, structure, content)
+			}
+		case "lexical_declaration", "variable_declaration":
+			// Ищем имя в variable_declarator или lexical_declarator
+			declarator := findFirstChildOfType(declarationNode, "variable_declarator")
+			if declarator != nil {
+				nameNode := declarator.ChildByFieldName("name")
+				if nameNode != nil {
+					exportedName = nameNode.Content(content)
+					exportType = "variable" // Упрощенно, может быть функция или класс
+					// Сама декларация будет обработана позже
+					p.parseVariableOrLexicalDeclaration(declarationNode, structure, content)
+				}
+			}
+		}
+	} else if valueNode != nil && valueNode.Type() == "identifier" && node.ChildCount() > 1 && node.Child(1).Type() == "default" { // export default identifier
+		exportedName = valueNode.Content(content)
+		exportType = "default_identifier"
+		posNode = valueNode
+	} else if node.ChildCount() > 1 && node.Child(1).Type() == "default" { // export default ... (не идентификатор)
+		exportedName = "default"
+		exportType = "default"
+		posNode = node.Child(1)
+	} else if node.ChildCount() > 0 && node.Child(0).Type() == "export_clause" { // export { name1, name2 }
+		exportClause := node.Child(0)
+		cursor := sitter.NewTreeCursor(exportClause)
+		defer cursor.Close()
 
-						cs.AddImport(&models.Import{
-							Path:  path,
-							Alias: alias,
-							Position: models.Position{
-								StartLine: lineNum + 1,
-								EndLine:   lineNum + 1,
-							},
+		if cursor.GoToFirstChild() { // Пропускаем { и }
+			for {
+				if cursor.CurrentNode().Type() == "export_specifier" {
+					nameNode := cursor.CurrentNode().ChildByFieldName("name")
+					if nameNode != nil {
+						structure.AddExport(&models.Export{
+							Name:     nameNode.Content(content),
+							Type:     "named",
+							Position: getNodePosition(cursor.CurrentNode()),
 						})
 					}
 				}
+
+				if !cursor.GoToNextSibling() {
+					break
+				}
 			}
 		}
+		return // Экспорты добавлены внутри цикла
+	}
 
-		// require() синтаксис
-		if strings.Contains(trimmedLine, "require(") {
-			startPos := strings.Index(trimmedLine, "require(") + len("require(")
-			endPos := strings.Index(trimmedLine[startPos:], ")") + startPos
-			if startPos != -1 && endPos > startPos {
-				path := trimmedLine[startPos:endPos]
-				// Удаляем кавычки
-				path = strings.Trim(path, "'\"")
+	if exportedName != "" {
+		startLine := int(posNode.StartPoint().Row)
+		startCol := int(posNode.StartPoint().Column)
+		endLine := int(posNode.EndPoint().Row)
+		endCol := int(posNode.EndPoint().Column)
 
-				cs.AddImport(&models.Import{
-					Path: path,
-					Position: models.Position{
-						StartLine: lineNum + 1,
-						EndLine:   lineNum + 1,
-					},
-				})
-			}
+		structure.AddExport(&models.Export{
+			Name: exportedName,
+			Type: exportType,
+			Position: models.Position{
+				StartLine:   startLine + 1,
+				StartColumn: startCol + 1,
+				EndLine:     endLine + 1,
+				EndColumn:   endCol + 1,
+			},
+		})
+	}
+
+	// TODO: Обработать `export * from 'source'`
+	// TODO: Обработать `export { name as alias } from 'source'`
+}
+
+// parseFunction извлекает функции (включая методы внутри классов)
+func (p *JavaScriptParser) parseFunction(node *sitter.Node, structure *models.CodeStructure, content []byte, isMethod bool) {
+	nameNode := node.ChildByFieldName("name")
+	if nameNode == nil {
+		// Может быть анонимная функция, присвоенная переменной, или метод класса без явного имени (например, конструктор)
+		// TODO: Обработать такие случаи, если необходимо
+		return
+	}
+
+	funcName := nameNode.Content(content)
+
+	// В JS функции и методы всегда публичные, если они не скрыты замыканием (что сложно определить статически)
+	isPublic := true
+
+	paramsNode := node.ChildByFieldName("parameters")
+	params := p.parseParameters(paramsNode, content)
+
+	startLine := int(node.StartPoint().Row)
+	startCol := int(node.StartPoint().Column)
+	endLine := int(node.EndPoint().Row)
+	endCol := int(node.EndPoint().Column)
+
+	fn := &models.Function{
+		Name:       funcName,
+		IsPublic:   isPublic,
+		Parameters: params,
+		ReturnType: "", // В JS тип возвращаемого значения обычно не указывается статически
+		Position: models.Position{
+			StartLine:   startLine + 1,
+			StartColumn: startCol + 1,
+			EndLine:     endLine + 1,
+			EndColumn:   endCol + 1,
+		},
+	}
+
+	if !isMethod {
+		structure.AddFunction(fn)
+	}
+	// Если это метод, он будет добавлен при парсинге тела класса
+}
+
+// parseClass извлекает классы
+func (p *JavaScriptParser) parseClass(node *sitter.Node, structure *models.CodeStructure, content []byte) {
+	nameNode := node.ChildByFieldName("name")
+	if nameNode == nil {
+		// Анонимный класс?
+		return
+	}
+
+	className := nameNode.Content(content)
+	isPublic := true // Считаем публичным по умолчанию
+
+	startLine := int(node.StartPoint().Row)
+	startCol := int(node.StartPoint().Column)
+	endLine := int(node.EndPoint().Row)
+	endCol := int(node.EndPoint().Column)
+
+	classModel := &models.Type{
+		Name:     className,
+		IsPublic: isPublic,
+		Kind:     "class",
+		Position: models.Position{
+			StartLine:   startLine + 1,
+			StartColumn: startCol + 1,
+			EndLine:     endLine + 1,
+			EndColumn:   endCol + 1,
+		},
+		Methods:    make([]*models.Method, 0),
+		Properties: make([]*models.Property, 0),
+	}
+
+	// Парсим тело класса для извлечения методов и свойств
+	bodyNode := node.ChildByFieldName("body")
+	if bodyNode != nil {
+		p.parseClassBody(bodyNode, classModel, content)
+	}
+
+	structure.AddType(classModel)
+}
+
+// parseClassBody извлекает методы и свойства из тела класса
+func (p *JavaScriptParser) parseClassBody(bodyNode *sitter.Node, classModel *models.Type, content []byte) {
+	cursor := sitter.NewTreeCursor(bodyNode)
+	defer cursor.Close()
+	if !cursor.GoToFirstChild() { // Пропускаем { и }
+		return
+	}
+
+	for {
+		currentNode := cursor.CurrentNode()
+		switch currentNode.Type() {
+		case "method_definition":
+			p.parseMethod(currentNode, classModel, content)
+		case "field_definition", "public_field_definition": // field_definition - старая грамматика?
+			p.parseField(currentNode, classModel, content)
+		}
+
+		if !cursor.GoToNextSibling() {
+			break
 		}
 	}
 }
 
-// parseExports извлекает экспорты из JavaScript файла
-func (p *JavaScriptParser) parseExports(lines []string, cs *models.CodeStructure) {
-	for lineNum, line := range lines {
-		trimmedLine := strings.TrimSpace(line)
+// parseMethod извлекает метод класса
+func (p *JavaScriptParser) parseMethod(node *sitter.Node, classModel *models.Type, content []byte) {
+	nameNode := node.ChildByFieldName("name")
+	if nameNode == nil {
+		// Может быть конструктор
+		if node.ChildCount() > 0 && node.Child(0).Content(content) == "constructor" {
+			nameNode = node.Child(0)
+		} else {
+			return
+		}
+	}
 
-		// export default expression;
-		if strings.HasPrefix(trimmedLine, "export default ") {
-			name := "default"
-			exportType := "default"
+	methodName := nameNode.Content(content)
+	isPublic := true // Методы класса по умолчанию публичные (до private #)
+	isStatic := false
+	kind := "method"
 
-			// Пытаемся определить тип экспорта
-			if strings.Contains(trimmedLine, "function ") {
-				exportType = "function"
-				// Извлекаем имя функции, если есть
-				funcPos := strings.Index(trimmedLine, "function ") + len("function ")
-				if funcPos < len(trimmedLine) {
-					spacePos := strings.Index(trimmedLine[funcPos:], "(")
-					if spacePos != -1 {
-						name = strings.TrimSpace(trimmedLine[funcPos : funcPos+spacePos])
-					}
-				}
-			} else if strings.Contains(trimmedLine, "class ") {
-				exportType = "class"
-				// Извлекаем имя класса
-				classPos := strings.Index(trimmedLine, "class ") + len("class ")
-				if classPos < len(trimmedLine) {
-					spacePos := strings.Index(trimmedLine[classPos:], " ")
-					if spacePos != -1 {
-						name = strings.TrimSpace(trimmedLine[classPos : classPos+spacePos])
+	// Проверяем модификаторы (static, get, set, async)
+	for i := 0; i < int(node.ChildCount()); i++ {
+		child := node.Child(i)
+		if child.Type() == "static" {
+			isStatic = true
+		} else if child.Type() == "get" {
+			kind = "getter"
+		} else if child.Type() == "set" {
+			kind = "setter"
+		}
+		// async не влияет на сигнатуру для нашей цели
+	}
+
+	if strings.HasPrefix(methodName, "#") {
+		isPublic = false
+		methodName = strings.TrimPrefix(methodName, "#")
+	}
+
+	paramsNode := node.ChildByFieldName("parameters")
+	params := p.parseParameters(paramsNode, content)
+
+	startLine := int(node.StartPoint().Row)
+	startCol := int(node.StartPoint().Column)
+	endLine := int(node.EndPoint().Row)
+	endCol := int(node.EndPoint().Column)
+
+	method := &models.Method{
+		Name:       methodName,
+		IsPublic:   isPublic,
+		IsStatic:   isStatic,
+		Kind:       kind,
+		BelongsTo:  classModel.Name,
+		Parameters: params,
+		ReturnType: "", // Не извлекаем для JS
+		Position: models.Position{
+			StartLine:   startLine + 1,
+			StartColumn: startCol + 1,
+			EndLine:     endLine + 1,
+			EndColumn:   endCol + 1,
+		},
+	}
+	classModel.Methods = append(classModel.Methods, method)
+}
+
+// parseField извлекает свойство класса
+func (p *JavaScriptParser) parseField(node *sitter.Node, classModel *models.Type, content []byte) {
+	nameNode := node.ChildByFieldName("name")
+	// valueNode := node.ChildByFieldName("value") // Не используется пока
+	if nameNode == nil {
+		return
+	}
+
+	fieldName := nameNode.Content(content)
+	isPublic := true
+	isStatic := false
+
+	// Проверяем модификаторы (static)
+	for i := 0; i < int(node.ChildCount()); i++ {
+		child := node.Child(i)
+		if child.Type() == "static" {
+			isStatic = true
+		}
+	}
+
+	if strings.HasPrefix(fieldName, "#") {
+		isPublic = false
+		fieldName = strings.TrimPrefix(fieldName, "#")
+	}
+
+	startLine := int(node.StartPoint().Row)
+	startCol := int(node.StartPoint().Column)
+	endLine := int(node.EndPoint().Row)
+	endCol := int(node.EndPoint().Column)
+
+	prop := &models.Property{
+		Name:     fieldName,
+		IsPublic: isPublic,
+		IsStatic: isStatic,
+		Type:     "", // Тип поля редко указывается статически в JS
+		Position: models.Position{
+			StartLine:   startLine + 1,
+			StartColumn: startCol + 1,
+			EndLine:     endLine + 1,
+			EndColumn:   endCol + 1,
+		},
+	}
+	classModel.Properties = append(classModel.Properties, prop)
+}
+
+// parseVariableOrLexicalDeclaration извлекает переменные (var, let, const)
+func (p *JavaScriptParser) parseVariableOrLexicalDeclaration(node *sitter.Node, structure *models.CodeStructure, content []byte) {
+	// Ищем все variable_declarator внутри
+	cursor := sitter.NewTreeCursor(node)
+	defer cursor.Close()
+
+	if !cursor.GoToFirstChild() {
+		return
+	}
+
+	for {
+		if cursor.CurrentNode().Type() == "variable_declarator" {
+			declarator := cursor.CurrentNode()
+
+			switch {
+			case declarator.ChildCount() >= 2 &&
+				declarator.Child(0).Type() == "identifier" &&
+				declarator.Child(1).Type() == "=":
+				// var/let/const name = value
+				name := declarator.Child(0).Content(content)
+
+				// Проверяем, не функция ли это (function expression или arrow function)
+				if declarator.ChildCount() >= 3 {
+					valueNode := declarator.Child(2)
+					if valueNode.Type() == "function" || valueNode.Type() == "arrow_function" {
+						// Это функция, добавляем как функцию
+						structure.AddFunction(&models.Function{
+							Name:       name,
+							IsPublic:   true, // В JS всё публичное по умолчанию
+							Parameters: p.parseParameters(findFirstChildOfType(valueNode, "formal_parameters"), content),
+							Position:   getNodePosition(declarator),
+						})
+
+						// Если не начинается с _, то считаем публичным API
+						if !strings.HasPrefix(name, "_") {
+							structure.AddExport(&models.Export{
+								Name:     name,
+								Type:     "function",
+								Position: getNodePosition(declarator),
+							})
+						}
 					}
 				}
 			}
+		}
 
-			cs.AddExport(&models.Export{
-				Name: name,
-				Type: exportType,
-				Position: models.Position{
-					StartLine: lineNum + 1,
-					EndLine:   lineNum + 1,
-				},
+		if !cursor.GoToNextSibling() {
+			break
+		}
+	}
+}
+
+// parseParameters извлекает параметры функции/метода
+func (p *JavaScriptParser) parseParameters(node *sitter.Node, content []byte) []*models.Parameter {
+	params := make([]*models.Parameter, 0)
+	if node == nil || node.Type() != "formal_parameters" {
+		return params
+	}
+
+	cursor := sitter.NewTreeCursor(node)
+	defer cursor.Close()
+	if !cursor.GoToFirstChild() { // Пропускаем ( и )
+		return params
+	}
+
+	for {
+		currentNode := cursor.CurrentNode()
+		var paramName string
+		var defaultValue string = ""
+		isRequired := true
+		isRest := false
+
+		switch currentNode.Type() {
+		case "identifier": // Простой параметр: func(a)
+			paramName = currentNode.Content(content)
+		case "required_parameter": // func(a)
+			patternNode := currentNode.ChildByFieldName("pattern")
+			if patternNode != nil && patternNode.Type() == "identifier" {
+				paramName = patternNode.Content(content)
+			}
+		case "optional_parameter": // func(a = 1)
+			isRequired = false
+			patternNode := currentNode.ChildByFieldName("pattern")
+			valueNode := currentNode.ChildByFieldName("value")
+			if patternNode != nil && patternNode.Type() == "identifier" {
+				paramName = patternNode.Content(content)
+			}
+			if valueNode != nil {
+				defaultValue = valueNode.Content(content)
+			}
+		case "rest_parameter": // func(...args)
+			isRest = true
+			// Имя находится внутри, обычно identifier
+			nameNode := findFirstChildOfType(currentNode, "identifier")
+			if nameNode != nil {
+				paramName = nameNode.Content(content)
+			}
+		case "assignment_pattern": // func({a = 1})
+			isRequired = false
+			leftNode := currentNode.ChildByFieldName("left")
+			rightNode := currentNode.ChildByFieldName("right")
+			if leftNode != nil && leftNode.Type() == "identifier" {
+				paramName = leftNode.Content(content)
+			}
+			if rightNode != nil {
+				defaultValue = rightNode.Content(content)
+			}
+		case "object_pattern", "array_pattern":
+			// Деструктуризация: func({a, b}, [c, d])
+			paramName = currentNode.Content(content) // Отображаем как есть
+			// TODO: Возможно, рекурсивно разбирать паттерны?
+		}
+
+		if paramName != "" {
+			params = append(params, &models.Parameter{
+				Name:         paramName,
+				Type:         "", // Тип не извлекаем для JS
+				IsRequired:   isRequired,
+				DefaultValue: defaultValue,
+				IsVariadic:   isRest,
 			})
 		}
 
-		// export { name1, name2, …, nameN };
-		// export { variable1 as name1, variable2 as name2, …, nameN };
-		if strings.HasPrefix(trimmedLine, "export {") {
-			startBrace := strings.Index(trimmedLine, "{")
-			endBrace := strings.Index(trimmedLine, "}")
-			if startBrace != -1 && endBrace > startBrace {
-				exports := trimmedLine[startBrace+1 : endBrace]
-				exportItems := strings.Split(exports, ",")
-				for _, item := range exportItems {
-					item = strings.TrimSpace(item)
-					if item == "" {
-						continue
-					}
-
-					name := item
-					exportType := "variable"
-
-					// Проверяем на 'as' синтаксис: variable as name
-					if strings.Contains(item, " as ") {
-						parts := strings.Split(item, " as ")
-						name = strings.TrimSpace(parts[1])
-					}
-
-					cs.AddExport(&models.Export{
-						Name: name,
-						Type: exportType,
-						Position: models.Position{
-							StartLine: lineNum + 1,
-							EndLine:   lineNum + 1,
-						},
-					})
-				}
-			}
-		}
-
-		// export const/let/var name = ...
-		if strings.HasPrefix(trimmedLine, "export const ") ||
-			strings.HasPrefix(trimmedLine, "export let ") ||
-			strings.HasPrefix(trimmedLine, "export var ") {
-
-			typeEndPos := len("export ")
-			if strings.HasPrefix(trimmedLine, "export const ") {
-				typeEndPos = len("export const ")
-			} else if strings.HasPrefix(trimmedLine, "export let ") {
-				typeEndPos = len("export let ")
-			} else if strings.HasPrefix(trimmedLine, "export var ") {
-				typeEndPos = len("export var ")
-			}
-
-			// Извлекаем имя переменной
-			nameEndPos := strings.Index(trimmedLine[typeEndPos:], "=")
-			if nameEndPos != -1 {
-				name := strings.TrimSpace(trimmedLine[typeEndPos : typeEndPos+nameEndPos])
-				cs.AddExport(&models.Export{
-					Name: name,
-					Type: "variable",
-					Position: models.Position{
-						StartLine: lineNum + 1,
-						EndLine:   lineNum + 1,
-					},
-				})
-			}
-		}
-
-		// export function name() { ... }
-		if strings.HasPrefix(trimmedLine, "export function ") {
-			funcPos := len("export function ")
-			// Извлекаем имя функции
-			parenPos := strings.Index(trimmedLine[funcPos:], "(")
-			if parenPos != -1 {
-				name := strings.TrimSpace(trimmedLine[funcPos : funcPos+parenPos])
-				cs.AddExport(&models.Export{
-					Name: name,
-					Type: "function",
-					Position: models.Position{
-						StartLine: lineNum + 1,
-						EndLine:   lineNum + 1,
-					},
-				})
-			}
-		}
-
-		// export class Name { ... }
-		if strings.HasPrefix(trimmedLine, "export class ") {
-			classPos := len("export class ")
-			// Извлекаем имя класса
-			spacePos := strings.Index(trimmedLine[classPos:], " ")
-			bracePos := strings.Index(trimmedLine[classPos:], "{")
-			endPos := spacePos
-			if (bracePos != -1 && bracePos < spacePos) || spacePos == -1 {
-				endPos = bracePos
-			}
-			if endPos != -1 {
-				name := strings.TrimSpace(trimmedLine[classPos : classPos+endPos])
-				cs.AddExport(&models.Export{
-					Name: name,
-					Type: "class",
-					Position: models.Position{
-						StartLine: lineNum + 1,
-						EndLine:   lineNum + 1,
-					},
-				})
-			}
-		}
-	}
-}
-
-// parseFunctions извлекает функции из JavaScript файла
-func (p *JavaScriptParser) parseFunctions(lines []string, cs *models.CodeStructure) {
-	for lineNum, line := range lines {
-		trimmedLine := strings.TrimSpace(line)
-
-		// Функции: function name() { ... }
-		if (strings.HasPrefix(trimmedLine, "function ") || strings.HasPrefix(trimmedLine, "const ") ||
-			strings.HasPrefix(trimmedLine, "let ") || strings.HasPrefix(trimmedLine, "var ")) &&
-			strings.Contains(trimmedLine, "(") {
-
-			var funcName string
-			var isPublic bool
-			var funcStart int
-
-			if strings.HasPrefix(trimmedLine, "function ") {
-				// Классическое определение функции
-				funcStart = len("function ")
-				funcEnd := strings.Index(trimmedLine[funcStart:], "(") + funcStart
-				if funcEnd > funcStart {
-					funcName = strings.TrimSpace(trimmedLine[funcStart:funcEnd])
-					isPublic = true // В JavaScript все функции публичные, если они экспортированы
-				}
-			} else if strings.Contains(trimmedLine, " = function(") ||
-				strings.Contains(trimmedLine, " = (") ||
-				strings.Contains(trimmedLine, " => ") {
-				// Функциональные выражения или стрелочные функции
-				// const/let/var name = function() { ... } или const/let/var name = () => { ... }
-				if strings.HasPrefix(trimmedLine, "const ") {
-					funcStart = len("const ")
-				} else if strings.HasPrefix(trimmedLine, "let ") {
-					funcStart = len("let ")
-				} else if strings.HasPrefix(trimmedLine, "var ") {
-					funcStart = len("var ")
-				}
-
-				funcEnd := strings.Index(trimmedLine[funcStart:], " =") + funcStart
-				if funcEnd > funcStart {
-					funcName = strings.TrimSpace(trimmedLine[funcStart:funcEnd])
-					isPublic = true
-				}
-			}
-
-			if funcName != "" {
-				method := &models.Method{
-					Name:     funcName,
-					IsPublic: isPublic,
-					Position: models.Position{
-						StartLine: lineNum + 1,
-						EndLine:   lineNum + 1,
-					},
-				}
-
-				// Извлекаем параметры
-				paramStartPos := strings.Index(trimmedLine, "(")
-				if paramStartPos != -1 {
-					paramEndPos := utils.FindMatchingCloseBracket(trimmedLine, paramStartPos)
-					if paramEndPos > paramStartPos {
-						paramString := trimmedLine[paramStartPos+1 : paramEndPos]
-						parameters := p.parseJSParameters(paramString)
-						method.Parameters = parameters
-					}
-				}
-
-				cs.AddMethod(method)
-			}
-		}
-	}
-}
-
-// parseClassesAndMethods извлекает классы и методы из JavaScript файла
-func (p *JavaScriptParser) parseClassesAndMethods(lines []string, cs *models.CodeStructure) {
-	inClass := false
-	currentClass := ""
-
-	for lineNum, line := range lines {
-		trimmedLine := strings.TrimSpace(line)
-
-		// Поиск определений класса
-		if strings.HasPrefix(trimmedLine, "class ") {
-			classNameStart := len("class ")
-			classNameEnd := strings.Index(trimmedLine[classNameStart:], " ")
-			bracePos := strings.Index(trimmedLine[classNameStart:], "{")
-
-			if classNameEnd == -1 || (bracePos != -1 && bracePos < classNameEnd) {
-				classNameEnd = bracePos
-			}
-
-			if classNameEnd != -1 {
-				className := trimmedLine[classNameStart : classNameStart+classNameEnd]
-				currentClass = className
-				inClass = true
-
-				// Создаем тип для класса
-				typ := &models.Type{
-					Name:     className,
-					Kind:     "class",
-					IsPublic: true, // Предполагаем, что класс публичный
-					Position: models.Position{
-						StartLine: lineNum + 1,
-						EndLine:   lineNum + 1,
-					},
-				}
-
-				// Проверяем наследование (extends)
-				if strings.Contains(trimmedLine, " extends ") {
-					extendsStartPos := strings.Index(trimmedLine, " extends ") + len(" extends ")
-					extendsEndPos := strings.Index(trimmedLine[extendsStartPos:], " ")
-					bracePos := strings.Index(trimmedLine[extendsStartPos:], "{")
-
-					if extendsEndPos == -1 || (bracePos != -1 && bracePos < extendsEndPos) {
-						extendsEndPos = bracePos
-					}
-
-					if extendsEndPos != -1 {
-						parentClass := trimmedLine[extendsStartPos : extendsStartPos+extendsEndPos]
-						typ.Parent = parentClass
-					}
-				}
-
-				cs.AddType(typ)
-			}
-		}
-
-		// Закрывающая скобка класса
-		if inClass && trimmedLine == "}" {
-			inClass = false
-			currentClass = ""
-		}
-
-		// Методы класса
-		if inClass && (strings.Contains(trimmedLine, "(") || strings.Contains(trimmedLine, "=")) {
-			// constructor() { ... }
-			// methodName() { ... }
-			// get property() { ... }
-			// set property(value) { ... }
-			// static methodName() { ... }
-
-			isStatic := strings.HasPrefix(trimmedLine, "static ")
-			isGetter := strings.HasPrefix(trimmedLine, "get ")
-			isSetter := strings.HasPrefix(trimmedLine, "set ")
-
-			// Определяем начальную позицию имени метода
-			methodStart := 0
-			if isStatic {
-				methodStart = len("static ")
-			} else if isGetter {
-				methodStart = len("get ")
-			} else if isSetter {
-				methodStart = len("set ")
-			}
-
-			// Ищем конец имени метода (скобка параметров)
-			methodEnd := strings.Index(trimmedLine[methodStart:], "(") + methodStart
-			if methodEnd > methodStart {
-				methodName := strings.TrimSpace(trimmedLine[methodStart:methodEnd])
-
-				// Создаем метод
-				method := &models.Method{
-					Name:      methodName,
-					IsPublic:  !strings.HasPrefix(methodName, "_"), // В JavaScript приватные методы часто начинаются с _
-					IsStatic:  isStatic,
-					BelongsTo: currentClass,
-					Position: models.Position{
-						StartLine: lineNum + 1,
-						EndLine:   lineNum + 1,
-					},
-				}
-
-				// Извлекаем параметры
-				paramStartPos := methodEnd
-				paramEndPos := utils.FindMatchingCloseBracket(trimmedLine, paramStartPos)
-				if paramEndPos > paramStartPos {
-					paramString := trimmedLine[paramStartPos+1 : paramEndPos]
-					parameters := p.parseJSParameters(paramString)
-					method.Parameters = parameters
-				}
-
-				cs.AddMethod(method)
-			}
-		}
-	}
-}
-
-// parseJSParameters разбирает строку параметров JS и создает массив Parameter
-func (p *JavaScriptParser) parseJSParameters(paramString string) []*models.Parameter {
-	if strings.TrimSpace(paramString) == "" {
-		return []*models.Parameter{}
-	}
-
-	params := make([]*models.Parameter, 0)
-	paramParts := strings.Split(paramString, ",")
-
-	for _, part := range paramParts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-
-		// Проверяем на параметры с значениями по умолчанию: name = value
-		defaultValue := ""
-		isRequired := true
-		name := part
-
-		if strings.Contains(part, "=") {
-			eqPos := strings.Index(part, "=")
-			name = strings.TrimSpace(part[:eqPos])
-			defaultValue = strings.TrimSpace(part[eqPos+1:])
-			isRequired = false
-		}
-
-		// Проверяем на деструктуризацию и рест-параметры
-		if strings.HasPrefix(name, "{") || strings.HasPrefix(name, "[") || strings.HasPrefix(name, "...") {
-			// Упрощенная обработка для сложных случаев
-			param := &models.Parameter{
-				Name:         name,
-				Type:         "any", // JavaScript не имеет статической типизации
-				DefaultValue: defaultValue,
-				IsRequired:   isRequired,
-			}
-			params = append(params, param)
-		} else {
-			// Обычный параметр
-			param := &models.Parameter{
-				Name:         name,
-				Type:         "any", // JavaScript не имеет статической типизации
-				DefaultValue: defaultValue,
-				IsRequired:   isRequired,
-			}
-			params = append(params, param)
+		if !cursor.GoToNextSibling() {
+			break
 		}
 	}
 
 	return params
+}
+
+// findFirstChildOfType вспомогательная функция для поиска первого дочернего узла заданного типа
+func findFirstChildOfType(node *sitter.Node, childType string) *sitter.Node {
+	for i := 0; i < int(node.ChildCount()); i++ {
+		child := node.Child(i)
+		if child != nil && child.Type() == childType {
+			return child
+		}
+	}
+	return nil
+}
+
+// getNodePosition вспомогательная функция для получения позиции узла
+func getNodePosition(node *sitter.Node) models.Position {
+	startLine := int(node.StartPoint().Row)
+	startCol := int(node.StartPoint().Column)
+	endLine := int(node.EndPoint().Row)
+	endCol := int(node.EndPoint().Column)
+
+	return models.Position{
+		StartLine:   startLine + 1,
+		StartColumn: startCol + 1,
+		EndLine:     endLine + 1,
+		EndColumn:   endCol + 1,
+	}
 }
