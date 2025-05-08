@@ -101,22 +101,32 @@ func (p *JavaScriptParser) parseImport(node *sitter.Node, structure *models.Code
 		return
 	}
 
-	// Извлекаем значение строки и удаляем кавычки
-	path := strings.Trim(sourceNode.Content(content), `"'`) // Удаляем одинарные и двойные кавычки
+	path := strings.Trim(sourceNode.Content(content), `"'`)
+	isDynamic := false // TODO
+	isNamespace := false
+	isTypeImport := false // TODO
 
-	// TODO: Обработать импортируемые имена (named imports, default import)
-	// Например: import { name1, name2 } from "path"
-	//           import defaultName from "path"
-	//           import * as alias from "path"
+	// Проверяем тип импорта
+	if node.ChildCount() > 0 {
+		firstChild := node.Child(0)
+		if firstChild.Type() == "import" {
+			// Проверяем на namespace import
+			if node.ChildCount() > 1 && node.Child(1).Type() == "*" {
+				isNamespace = true
+			}
+		}
+	}
 
 	startLine := int(node.StartPoint().Row)
 	startCol := int(node.StartPoint().Column)
 	endLine := int(node.EndPoint().Row)
 	endCol := int(node.EndPoint().Column)
 
-	// Создаем объект импорта
 	imp := &models.Import{
-		Path: path,
+		Path:         path,
+		IsDynamic:    isDynamic,
+		IsNamespace:  isNamespace,
+		IsTypeImport: isTypeImport,
 		Position: models.Position{
 			StartLine:   startLine + 1,
 			StartColumn: startCol + 1,
@@ -125,7 +135,6 @@ func (p *JavaScriptParser) parseImport(node *sitter.Node, structure *models.Code
 		},
 	}
 
-	// Добавляем импорт в структуру
 	structure.AddImport(imp)
 }
 
@@ -133,13 +142,13 @@ func (p *JavaScriptParser) parseImport(node *sitter.Node, structure *models.Code
 func (p *JavaScriptParser) parseExport(node *sitter.Node, structure *models.CodeStructure, content []byte) {
 	var exportedName string
 	var exportType string = "unknown"
-	var posNode *sitter.Node = node // Узел для определения позиции
+	var posNode *sitter.Node = node
+	isDefault := false
+	isTypeExport := false
+	isNamespace := false
 
-	// Экспорт может быть разным: export default ..., export { ... }, export const ..., export function ...
-	valueNode := node.ChildByFieldName("value")             // Для `export default value;`
-	declarationNode := node.ChildByFieldName("declaration") // Для `export const/let/var/function/class ...`
-	// Для `export ... from 'source'` - не используется, убрал чтобы не было warning
-	// sourceNode := node.ChildByFieldName("source")
+	valueNode := node.ChildByFieldName("value")
+	declarationNode := node.ChildByFieldName("declaration")
 
 	if declarationNode != nil {
 		posNode = declarationNode
@@ -149,7 +158,6 @@ func (p *JavaScriptParser) parseExport(node *sitter.Node, structure *models.Code
 			if nameNode != nil {
 				exportedName = nameNode.Content(content)
 				exportType = "function"
-				// Сама функция будет разобрана позже при обходе
 				p.parseFunction(declarationNode, structure, content, false)
 			}
 		case "class_declaration":
@@ -157,44 +165,46 @@ func (p *JavaScriptParser) parseExport(node *sitter.Node, structure *models.Code
 			if nameNode != nil {
 				exportedName = nameNode.Content(content)
 				exportType = "class"
-				// Сам класс будет разобран позже
 				p.parseClass(declarationNode, structure, content)
 			}
 		case "lexical_declaration", "variable_declaration":
-			// Ищем имя в variable_declarator или lexical_declarator
 			declarator := findFirstChildOfType(declarationNode, "variable_declarator")
 			if declarator != nil {
 				nameNode := declarator.ChildByFieldName("name")
 				if nameNode != nil {
 					exportedName = nameNode.Content(content)
-					exportType = "variable" // Упрощенно, может быть функция или класс
-					// Сама декларация будет обработана позже
+					exportType = "variable"
 					p.parseVariableOrLexicalDeclaration(declarationNode, structure, content)
 				}
 			}
 		}
-	} else if valueNode != nil && valueNode.Type() == "identifier" && node.ChildCount() > 1 && node.Child(1).Type() == "default" { // export default identifier
+	} else if valueNode != nil && valueNode.Type() == "identifier" && node.ChildCount() > 1 && node.Child(1).Type() == "default" {
 		exportedName = valueNode.Content(content)
 		exportType = "default_identifier"
+		isDefault = true
 		posNode = valueNode
-	} else if node.ChildCount() > 1 && node.Child(1).Type() == "default" { // export default ... (не идентификатор)
+	} else if node.ChildCount() > 1 && node.Child(1).Type() == "default" {
 		exportedName = "default"
 		exportType = "default"
+		isDefault = true
 		posNode = node.Child(1)
-	} else if node.ChildCount() > 0 && node.Child(0).Type() == "export_clause" { // export { name1, name2 }
+	} else if node.ChildCount() > 0 && node.Child(0).Type() == "export_clause" {
 		exportClause := node.Child(0)
 		cursor := sitter.NewTreeCursor(exportClause)
 		defer cursor.Close()
 
-		if cursor.GoToFirstChild() { // Пропускаем { и }
+		if cursor.GoToFirstChild() {
 			for {
 				if cursor.CurrentNode().Type() == "export_specifier" {
 					nameNode := cursor.CurrentNode().ChildByFieldName("name")
 					if nameNode != nil {
 						structure.AddExport(&models.Export{
-							Name:     nameNode.Content(content),
-							Type:     "named",
-							Position: getNodePosition(cursor.CurrentNode()),
+							Name:         nameNode.Content(content),
+							Type:         "named",
+							IsDefault:    false,
+							IsTypeExport: false,
+							IsNamespace:  false,
+							Position:     getNodePosition(cursor.CurrentNode()),
 						})
 					}
 				}
@@ -204,7 +214,7 @@ func (p *JavaScriptParser) parseExport(node *sitter.Node, structure *models.Code
 				}
 			}
 		}
-		return // Экспорты добавлены внутри цикла
+		return
 	}
 
 	if exportedName != "" {
@@ -214,8 +224,11 @@ func (p *JavaScriptParser) parseExport(node *sitter.Node, structure *models.Code
 		endCol := int(posNode.EndPoint().Column)
 
 		structure.AddExport(&models.Export{
-			Name: exportedName,
-			Type: exportType,
+			Name:         exportedName,
+			Type:         exportType,
+			IsDefault:    isDefault,
+			IsTypeExport: isTypeExport,
+			IsNamespace:  isNamespace,
 			Position: models.Position{
 				StartLine:   startLine + 1,
 				StartColumn: startCol + 1,
@@ -224,24 +237,32 @@ func (p *JavaScriptParser) parseExport(node *sitter.Node, structure *models.Code
 			},
 		})
 	}
-
-	// TODO: Обработать `export * from 'source'`
-	// TODO: Обработать `export { name as alias } from 'source'`
 }
 
 // parseFunction извлекает функции (включая методы внутри классов)
 func (p *JavaScriptParser) parseFunction(node *sitter.Node, structure *models.CodeStructure, content []byte, isMethod bool) {
 	nameNode := node.ChildByFieldName("name")
 	if nameNode == nil {
-		// Может быть анонимная функция, присвоенная переменной, или метод класса без явного имени (например, конструктор)
-		// TODO: Обработать такие случаи, если необходимо
+		// Может быть анонимная функция, присвоенная переменной, или метод класса без явного имени
 		return
 	}
 
 	funcName := nameNode.Content(content)
+	isPublic := true // В JS функции и методы всегда публичные, если они не скрыты замыканием
+	isAsync := false
+	isGenerator := false
+	isArrow := node.Type() == "arrow_function"
+	isIIFE := false // TODO: Определить IIFE
 
-	// В JS функции и методы всегда публичные, если они не скрыты замыканием (что сложно определить статически)
-	isPublic := true
+	// Проверяем модификаторы
+	for i := 0; i < int(node.ChildCount()); i++ {
+		child := node.Child(i)
+		if child.Type() == "async" {
+			isAsync = true
+		} else if child.Type() == "generator" {
+			isGenerator = true
+		}
+	}
 
 	paramsNode := node.ChildByFieldName("parameters")
 	params := p.parseParameters(paramsNode, content)
@@ -251,20 +272,24 @@ func (p *JavaScriptParser) parseFunction(node *sitter.Node, structure *models.Co
 	endLine := int(node.EndPoint().Row)
 	endCol := int(node.EndPoint().Column)
 
-	fn := &models.Function{
-		Name:       funcName,
-		IsPublic:   isPublic,
-		Parameters: params,
-		ReturnType: "", // В JS тип возвращаемого значения обычно не указывается статически
-		Position: models.Position{
-			StartLine:   startLine + 1,
-			StartColumn: startCol + 1,
-			EndLine:     endLine + 1,
-			EndColumn:   endCol + 1,
-		},
-	}
-
 	if !isMethod {
+		// Это функция верхнего уровня
+		fn := &models.Function{
+			Name:        funcName,
+			IsPublic:    isPublic,
+			IsAsync:     isAsync,
+			IsGenerator: isGenerator,
+			IsArrow:     isArrow,
+			IsIIFE:      isIIFE,
+			Parameters:  params,
+			ReturnType:  "", // В JS тип возвращаемого значения обычно не указывается статически
+			Position: models.Position{
+				StartLine:   startLine + 1,
+				StartColumn: startCol + 1,
+				EndLine:     endLine + 1,
+				EndColumn:   endCol + 1,
+			},
+		}
 		structure.AddFunction(fn)
 	}
 	// Если это метод, он будет добавлен при парсинге тела класса
@@ -274,12 +299,20 @@ func (p *JavaScriptParser) parseFunction(node *sitter.Node, structure *models.Co
 func (p *JavaScriptParser) parseClass(node *sitter.Node, structure *models.CodeStructure, content []byte) {
 	nameNode := node.ChildByFieldName("name")
 	if nameNode == nil {
-		// Анонимный класс?
 		return
 	}
 
 	className := nameNode.Content(content)
-	isPublic := true // Считаем публичным по умолчанию
+	isPublic := true    // Считаем публичным по умолчанию
+	isAbstract := false // TODO: Определить абстрактный класс
+	isInterface := false
+	isMixin := false
+	isGeneric := false
+	isEnum := false
+
+	// TODO: Извлечь родительские классы и интерфейсы
+	var parent string
+	var implements []string
 
 	startLine := int(node.StartPoint().Row)
 	startCol := int(node.StartPoint().Column)
@@ -287,9 +320,17 @@ func (p *JavaScriptParser) parseClass(node *sitter.Node, structure *models.CodeS
 	endCol := int(node.EndPoint().Column)
 
 	classModel := &models.Type{
-		Name:     className,
-		IsPublic: isPublic,
-		Kind:     "class",
+		Name:              className,
+		IsPublic:          isPublic,
+		IsAbstract:        isAbstract,
+		IsInterface:       isInterface,
+		IsMixin:           isMixin,
+		IsGeneric:         isGeneric,
+		IsEnum:            isEnum,
+		Kind:              "class",
+		Parent:            parent,
+		Implements:        implements,
+		GenericParameters: make([]string, 0),
 		Position: models.Position{
 			StartLine:   startLine + 1,
 			StartColumn: startCol + 1,
@@ -347,19 +388,26 @@ func (p *JavaScriptParser) parseMethod(node *sitter.Node, classModel *models.Typ
 	methodName := nameNode.Content(content)
 	isPublic := true // Методы класса по умолчанию публичные (до private #)
 	isStatic := false
+	isAsync := false
+	isGenerator := false
+	isDecorator := false
+	isConstructor := methodName == "constructor"
 	kind := "method"
 
-	// Проверяем модификаторы (static, get, set, async)
+	// Проверяем модификаторы
 	for i := 0; i < int(node.ChildCount()); i++ {
 		child := node.Child(i)
 		if child.Type() == "static" {
 			isStatic = true
+		} else if child.Type() == "async" {
+			isAsync = true
+		} else if child.Type() == "generator" {
+			isGenerator = true
 		} else if child.Type() == "get" {
 			kind = "getter"
 		} else if child.Type() == "set" {
 			kind = "setter"
 		}
-		// async не влияет на сигнатуру для нашей цели
 	}
 
 	if strings.HasPrefix(methodName, "#") {
@@ -376,13 +424,17 @@ func (p *JavaScriptParser) parseMethod(node *sitter.Node, classModel *models.Typ
 	endCol := int(node.EndPoint().Column)
 
 	method := &models.Method{
-		Name:       methodName,
-		IsPublic:   isPublic,
-		IsStatic:   isStatic,
-		Kind:       kind,
-		BelongsTo:  classModel.Name,
-		Parameters: params,
-		ReturnType: "", // Не извлекаем для JS
+		Name:          methodName,
+		IsPublic:      isPublic,
+		IsStatic:      isStatic,
+		IsAsync:       isAsync,
+		IsGenerator:   isGenerator,
+		IsDecorator:   isDecorator,
+		IsConstructor: isConstructor,
+		Kind:          kind,
+		BelongsTo:     classModel.Name,
+		Parameters:    params,
+		ReturnType:    "", // Не извлекаем для JS
 		Position: models.Position{
 			StartLine:   startLine + 1,
 			StartColumn: startCol + 1,
@@ -396,7 +448,6 @@ func (p *JavaScriptParser) parseMethod(node *sitter.Node, classModel *models.Typ
 // parseField извлекает свойство класса
 func (p *JavaScriptParser) parseField(node *sitter.Node, classModel *models.Type, content []byte) {
 	nameNode := node.ChildByFieldName("name")
-	// valueNode := node.ChildByFieldName("value") // Не используется пока
 	if nameNode == nil {
 		return
 	}
@@ -404,8 +455,11 @@ func (p *JavaScriptParser) parseField(node *sitter.Node, classModel *models.Type
 	fieldName := nameNode.Content(content)
 	isPublic := true
 	isStatic := false
+	isComputed := false
+	isPrivate := false
+	isReadonly := false
 
-	// Проверяем модификаторы (static)
+	// Проверяем модификаторы
 	for i := 0; i < int(node.ChildCount()); i++ {
 		child := node.Child(i)
 		if child.Type() == "static" {
@@ -415,6 +469,7 @@ func (p *JavaScriptParser) parseField(node *sitter.Node, classModel *models.Type
 
 	if strings.HasPrefix(fieldName, "#") {
 		isPublic = false
+		isPrivate = true
 		fieldName = strings.TrimPrefix(fieldName, "#")
 	}
 
@@ -424,10 +479,13 @@ func (p *JavaScriptParser) parseField(node *sitter.Node, classModel *models.Type
 	endCol := int(node.EndPoint().Column)
 
 	prop := &models.Property{
-		Name:     fieldName,
-		IsPublic: isPublic,
-		IsStatic: isStatic,
-		Type:     "", // Тип поля редко указывается статически в JS
+		Name:       fieldName,
+		IsPublic:   isPublic,
+		IsStatic:   isStatic,
+		IsComputed: isComputed,
+		IsPrivate:  isPrivate,
+		IsReadonly: isReadonly,
+		Type:       "", // Тип поля редко указывается статически в JS
 		Position: models.Position{
 			StartLine:   startLine + 1,
 			StartColumn: startCol + 1,
@@ -509,6 +567,8 @@ func (p *JavaScriptParser) parseParameters(node *sitter.Node, content []byte) []
 		var defaultValue string = ""
 		isRequired := true
 		isRest := false
+		isDestructuredObject := false
+		isDestructuredArray := false
 
 		switch currentNode.Type() {
 		case "identifier": // Простой параметр: func(a)
@@ -530,7 +590,6 @@ func (p *JavaScriptParser) parseParameters(node *sitter.Node, content []byte) []
 			}
 		case "rest_parameter": // func(...args)
 			isRest = true
-			// Имя находится внутри, обычно identifier
 			nameNode := findFirstChildOfType(currentNode, "identifier")
 			if nameNode != nil {
 				paramName = nameNode.Content(content)
@@ -545,19 +604,23 @@ func (p *JavaScriptParser) parseParameters(node *sitter.Node, content []byte) []
 			if rightNode != nil {
 				defaultValue = rightNode.Content(content)
 			}
-		case "object_pattern", "array_pattern":
-			// Деструктуризация: func({a, b}, [c, d])
-			paramName = currentNode.Content(content) // Отображаем как есть
-			// TODO: Возможно, рекурсивно разбирать паттерны?
+		case "object_pattern":
+			isDestructuredObject = true
+			paramName = currentNode.Content(content)
+		case "array_pattern":
+			isDestructuredArray = true
+			paramName = currentNode.Content(content)
 		}
 
 		if paramName != "" {
 			params = append(params, &models.Parameter{
-				Name:         paramName,
-				Type:         "", // Тип не извлекаем для JS
-				IsRequired:   isRequired,
-				DefaultValue: defaultValue,
-				IsVariadic:   isRest,
+				Name:                 paramName,
+				Type:                 "", // Тип не извлекаем для JS
+				IsRequired:           isRequired,
+				DefaultValue:         defaultValue,
+				IsVariadic:           isRest,
+				IsDestructuredObject: isDestructuredObject,
+				IsDestructuredArray:  isDestructuredArray,
 			})
 		}
 

@@ -263,3 +263,288 @@ var (
 	assert.NotNil(t, privateVar, "Приватная переменная должна быть извлечена")
 	assert.False(t, privateVar.IsPublic, "Переменная privateVar должна быть приватной")
 }
+
+// TestGoParserInterface проверяет корректность извлечения интерфейсов из Go файла
+func TestGoParserInterface(t *testing.T) {
+	// Пример содержимого Go файла с интерфейсами
+	content := `package example
+
+// Repository определяет общий интерфейс для работы с хранилищем
+type Repository interface {
+	// Get возвращает сущность по ID
+	Get(id string) (interface{}, error)
+	
+	// Save сохраняет сущность
+	Save(entity interface{}) error
+	
+	// Delete удаляет сущность по ID
+	Delete(id string) error
+}
+
+// Logger описывает интерфейс для логирования
+type logger interface {
+	Log(message string, level int)
+	Error(err error)
+}`
+
+	// Создание временного файла
+	tmpfile, _ := createTempFile(t, content, ".go")
+	defer os.Remove(tmpfile.Name())
+
+	// Создание конфигурации и парсера
+	cfg := config.DefaultConfig()
+	parser := languages.NewGoParser(cfg)
+
+	// Парсинг файла
+	metadata := createFileMetadata(t, tmpfile.Name())
+	structure, err := parser.Parse(metadata)
+
+	// Проверки
+	assert.NoError(t, err, "Парсинг должен выполняться без ошибок")
+	assert.NotNil(t, structure, "Структура кода не должна быть nil")
+	assert.Equal(t, 2, len(structure.Types), "Должно быть извлечено 2 интерфейса")
+
+	// Проверка публичного интерфейса
+	var publicInterface, privateInterface *models.Type
+	for _, t := range structure.Types {
+		if t.Name == "Repository" {
+			publicInterface = t
+		} else if t.Name == "logger" {
+			privateInterface = t
+		}
+	}
+
+	assert.NotNil(t, publicInterface, "Публичный интерфейс должен быть извлечен")
+	assert.Equal(t, "interface", publicInterface.Kind, "Kind должен быть 'interface'")
+	assert.True(t, publicInterface.IsPublic, "Интерфейс Repository должен быть публичным")
+	assert.Equal(t, 3, len(publicInterface.Methods), "Публичный интерфейс должен иметь 3 метода")
+
+	// Проверка методов интерфейса
+	var getMethod, saveMethod, deleteMethod *models.Method
+	for _, m := range publicInterface.Methods {
+		if m.Name == "Get" {
+			getMethod = m
+		} else if m.Name == "Save" {
+			saveMethod = m
+		} else if m.Name == "Delete" {
+			deleteMethod = m
+		}
+	}
+
+	assert.NotNil(t, getMethod, "Метод Get должен быть извлечен")
+	assert.Equal(t, 1, len(getMethod.Parameters), "Метод Get должен иметь 1 параметр")
+	assert.Equal(t, "interface{}, error", getMethod.ReturnType, "Метод Get должен возвращать (interface{}, error)")
+
+	assert.NotNil(t, saveMethod, "Метод Save должен быть извлечен")
+	assert.NotNil(t, deleteMethod, "Метод Delete должен быть извлечен")
+
+	// Проверка приватного интерфейса
+	assert.NotNil(t, privateInterface, "Приватный интерфейс должен быть извлечен")
+	assert.Equal(t, "interface", privateInterface.Kind, "Kind должен быть 'interface'")
+	assert.False(t, privateInterface.IsPublic, "Интерфейс logger должен быть приватным")
+	assert.Equal(t, 2, len(privateInterface.Methods), "Приватный интерфейс должен иметь 2 метода")
+}
+
+// TestGoParserGenerics проверяет корректность извлечения дженериков из Go файла
+func TestGoParserGenerics(t *testing.T) {
+	// Пример содержимого Go файла с дженериками
+	content := `package example
+
+// Stack представляет собой обобщенный стек
+type Stack[T any] struct {
+	items []T
+}
+
+// NewStack создает новый стек
+func NewStack[T any]() *Stack[T] {
+	return &Stack[T]{items: make([]T, 0)}
+}
+
+// Push добавляет элемент в стек
+func (s *Stack[T]) Push(item T) {
+	s.items = append(s.items, item)
+}
+
+// Pop извлекает элемент из стека
+func (s *Stack[T]) Pop() (T, bool) {
+	var zero T
+	if len(s.items) == 0 {
+		return zero, false
+	}
+	
+	item := s.items[len(s.items)-1]
+	s.items = s.items[:len(s.items)-1]
+	return item, true
+}
+
+// Generic функция
+func Map[T, U any](slice []T, f func(T) U) []U {
+	result := make([]U, len(slice))
+	for i, v := range slice {
+		result[i] = f(v)
+	}
+	return result
+}`
+
+	// Создание временного файла
+	tmpfile, _ := createTempFile(t, content, ".go")
+	defer os.Remove(tmpfile.Name())
+
+	// Создание конфигурации и парсера
+	cfg := config.DefaultConfig()
+	parser := languages.NewGoParser(cfg)
+
+	// Парсинг файла
+	metadata := createFileMetadata(t, tmpfile.Name())
+	structure, err := parser.Parse(metadata)
+
+	// Проверки
+	assert.NoError(t, err, "Парсинг должен выполняться без ошибок")
+	assert.NotNil(t, structure, "Структура кода не должна быть nil")
+
+	// Проверка типа с дженериками
+	var stackType *models.Type
+	for _, t := range structure.Types {
+		if t.Name == "Stack" {
+			stackType = t
+			break
+		}
+	}
+
+	assert.NotNil(t, stackType, "Тип Stack должен быть извлечен")
+	assert.True(t, stackType.IsPublic, "Тип Stack должен быть публичным")
+	assert.Equal(t, "struct", stackType.Kind, "Kind типа должен быть 'struct'")
+	assert.Contains(t, stackType.Name, "Stack", "Имя типа должно содержать Stack")
+
+	// Проверка методов дженерик-типа
+	var pushMethod, popMethod *models.Method
+	for _, m := range structure.Methods {
+		if m.Name == "Push" && m.BelongsTo == "Stack" {
+			pushMethod = m
+		} else if m.Name == "Pop" && m.BelongsTo == "Stack" {
+			popMethod = m
+		}
+	}
+
+	assert.NotNil(t, pushMethod, "Метод Push должен быть извлечен")
+	assert.Equal(t, 1, len(pushMethod.Parameters), "Метод Push должен иметь 1 параметр")
+
+	assert.NotNil(t, popMethod, "Метод Pop должен быть извлечен")
+	assert.Equal(t, "T, bool", popMethod.ReturnType, "Метод Pop должен возвращать (T, bool)")
+
+	// Проверка функции с дженериками
+	var mapFunction *models.Method
+	for _, m := range structure.Methods {
+		if m.Name == "Map" && m.BelongsTo == "" {
+			mapFunction = m
+			break
+		}
+	}
+
+	assert.NotNil(t, mapFunction, "Функция Map должна быть извлечена")
+	assert.Equal(t, "Map", mapFunction.Name, "Имя функции должно быть Map")
+	assert.Equal(t, 2, len(mapFunction.Parameters), "Функция Map должна иметь 2 параметра")
+	assert.Equal(t, "[]U", mapFunction.ReturnType, "Функция Map должна возвращать []U")
+}
+
+// TestGoParserEmbeddedTypes проверяет корректность извлечения встроенных типов
+func TestGoParserEmbeddedTypes(t *testing.T) {
+	// Пример содержимого Go файла со встроенными типами
+	content := `package example
+
+import "io"
+
+// BaseReader предоставляет базовую функциональность чтения
+type BaseReader struct {
+	source io.Reader
+}
+
+// Read реализует интерфейс io.Reader
+func (br *BaseReader) Read(p []byte) (n int, err error) {
+	return br.source.Read(p)
+}
+
+// EnhancedReader расширяет BaseReader дополнительной функциональностью
+type EnhancedReader struct {
+	BaseReader
+	bufferSize int
+}
+
+// NewEnhancedReader создает новый EnhancedReader
+func NewEnhancedReader(r io.Reader, size int) *EnhancedReader {
+	return &EnhancedReader{
+		BaseReader: BaseReader{source: r},
+		bufferSize: size,
+	}
+}
+
+// ReadAll читает все данные
+func (er *EnhancedReader) ReadAll() ([]byte, error) {
+	// реализация метода
+	return nil, nil
+}`
+
+	// Создание временного файла
+	tmpfile, _ := createTempFile(t, content, ".go")
+	defer os.Remove(tmpfile.Name())
+
+	// Создание конфигурации и парсера
+	cfg := config.DefaultConfig()
+	parser := languages.NewGoParser(cfg)
+
+	// Парсинг файла
+	metadata := createFileMetadata(t, tmpfile.Name())
+	structure, err := parser.Parse(metadata)
+
+	// Проверки
+	assert.NoError(t, err, "Парсинг должен выполняться без ошибок")
+	assert.NotNil(t, structure, "Структура кода не должна быть nil")
+
+	// Проверка базового типа
+	var baseReader *models.Type
+	for _, t := range structure.Types {
+		if t.Name == "BaseReader" {
+			baseReader = t
+			break
+		}
+	}
+
+	assert.NotNil(t, baseReader, "Тип BaseReader должен быть извлечен")
+	assert.True(t, baseReader.IsPublic, "Тип BaseReader должен быть публичным")
+
+	// Проверка расширенного типа
+	var enhancedReader *models.Type
+	for _, t := range structure.Types {
+		if t.Name == "EnhancedReader" {
+			enhancedReader = t
+			break
+		}
+	}
+
+	assert.NotNil(t, enhancedReader, "Тип EnhancedReader должен быть извлечен")
+	assert.True(t, enhancedReader.IsPublic, "Тип EnhancedReader должен быть публичным")
+
+	// Проверка встроенного типа
+	foundEmbedded := false
+	for _, prop := range enhancedReader.Properties {
+		if prop.Name == "BaseReader" && prop.Type == "" {
+			// В Go встроенные типы обычно не имеют явно указанного типа
+			foundEmbedded = true
+			break
+		}
+	}
+
+	assert.True(t, foundEmbedded, "Встроенный тип BaseReader должен быть обнаружен")
+
+	// Проверка методов расширенного типа
+	var readAllMethod *models.Method
+	for _, m := range structure.Methods {
+		if m.Name == "ReadAll" && m.BelongsTo == "EnhancedReader" {
+			readAllMethod = m
+			break
+		}
+	}
+
+	assert.NotNil(t, readAllMethod, "Метод ReadAll должен быть извлечен")
+	assert.Equal(t, "[]byte, error", readAllMethod.ReturnType, "Метод ReadAll должен возвращать ([]byte, error)")
+}

@@ -128,32 +128,44 @@ func (p *GoParser) parseFunction(node *sitter.Node, structure *models.CodeStruct
 
 	name := string(content[nameNode.StartByte():nameNode.EndByte()])
 	isPublic := isPublicName(name)
-
-	method := &models.Method{
-		Name:      name,
-		IsPublic:  isPublic,
-		BelongsTo: "", // Функция верхнего уровня
-		Position: models.Position{
-			StartLine:   int(node.StartPoint().Row) + 1,
-			StartColumn: int(node.StartPoint().Column) + 1,
-			EndLine:     int(node.EndPoint().Row) + 1,
-			EndColumn:   int(node.EndPoint().Column) + 1,
-		},
-	}
+	isAsync := false     // Go не имеет асинхронных функций
+	isGenerator := false // Go не имеет генераторов
+	isArrow := false     // Go не имеет стрелочных функций
+	isIIFE := false      // Go не имеет IIFE
 
 	// Извлекаем параметры
 	paramsNode := node.ChildByFieldName("parameters")
-	if paramsNode != nil {
-		method.Parameters = p.parseParameters(paramsNode, content)
-	}
+	params := p.parseParameters(paramsNode, content)
 
 	// Извлекаем возвращаемые значения
 	resultNode := node.ChildByFieldName("result")
+	returnType := ""
 	if resultNode != nil {
-		method.ReturnType = p.parseResultType(resultNode, content)
+		returnType = p.parseResultType(resultNode, content)
 	}
 
-	structure.AddMethod(method)
+	startLine := int(node.StartPoint().Row)
+	startCol := int(node.StartPoint().Column)
+	endLine := int(node.EndPoint().Row)
+	endCol := int(node.EndPoint().Column)
+
+	fn := &models.Function{
+		Name:        name,
+		IsPublic:    isPublic,
+		IsAsync:     isAsync,
+		IsGenerator: isGenerator,
+		IsArrow:     isArrow,
+		IsIIFE:      isIIFE,
+		Parameters:  params,
+		ReturnType:  returnType,
+		Position: models.Position{
+			StartLine:   startLine + 1,
+			StartColumn: startCol + 1,
+			EndLine:     endLine + 1,
+			EndColumn:   endCol + 1,
+		},
+	}
+	structure.AddFunction(fn)
 }
 
 // parseMethod извлекает методы
@@ -165,6 +177,12 @@ func (p *GoParser) parseMethod(node *sitter.Node, structure *models.CodeStructur
 
 	name := string(content[nameNode.StartByte():nameNode.EndByte()])
 	isPublic := isPublicName(name)
+	isStatic := false      // Go не имеет статических методов
+	isAsync := false       // Go не имеет асинхронных методов
+	isGenerator := false   // Go не имеет генераторов
+	isDecorator := false   // Go не имеет декораторов
+	isConstructor := false // Go не имеет конструкторов в том же смысле, что и другие языки
+	kind := "method"
 
 	// Извлекаем тип, к которому привязан метод
 	receiverNode := node.ChildByFieldName("receiver")
@@ -175,30 +193,41 @@ func (p *GoParser) parseMethod(node *sitter.Node, structure *models.CodeStructur
 		belongsTo = p.parseReceiverType(receiverNode, content)
 	}
 
-	method := &models.Method{
-		Name:      name,
-		IsPublic:  isPublic,
-		BelongsTo: belongsTo,
-		Position: models.Position{
-			StartLine:   int(node.StartPoint().Row) + 1,
-			StartColumn: int(node.StartPoint().Column) + 1,
-			EndLine:     int(node.EndPoint().Row) + 1,
-			EndColumn:   int(node.EndPoint().Column) + 1,
-		},
-	}
-
 	// Извлекаем параметры
 	paramsNode := node.ChildByFieldName("parameters")
-	if paramsNode != nil {
-		method.Parameters = p.parseParameters(paramsNode, content)
-	}
+	params := p.parseParameters(paramsNode, content)
 
 	// Извлекаем возвращаемые значения
 	resultNode := node.ChildByFieldName("result")
+	returnType := ""
 	if resultNode != nil {
-		method.ReturnType = p.parseResultType(resultNode, content)
+		returnType = p.parseResultType(resultNode, content)
 	}
 
+	startLine := int(node.StartPoint().Row)
+	startCol := int(node.StartPoint().Column)
+	endLine := int(node.EndPoint().Row)
+	endCol := int(node.EndPoint().Column)
+
+	method := &models.Method{
+		Name:          name,
+		IsPublic:      isPublic,
+		IsStatic:      isStatic,
+		IsAsync:       isAsync,
+		IsGenerator:   isGenerator,
+		IsDecorator:   isDecorator,
+		IsConstructor: isConstructor,
+		Kind:          kind,
+		BelongsTo:     belongsTo,
+		Parameters:    params,
+		ReturnType:    returnType,
+		Position: models.Position{
+			StartLine:   startLine + 1,
+			StartColumn: startCol + 1,
+			EndLine:     endLine + 1,
+			EndColumn:   endCol + 1,
+		},
+	}
 	structure.AddMethod(method)
 }
 
@@ -224,11 +253,20 @@ func (p *GoParser) parseType(node *sitter.Node, structure *models.CodeStructure,
 
 			name := string(content[nameNode.StartByte():nameNode.EndByte()])
 			isPublic := isPublicName(name)
+			isAbstract := false // Go не имеет абстрактных классов
+			isInterface := false
+			isMixin := false   // Go не имеет миксинов
+			isGeneric := false // TODO: Добавить поддержку дженериков
+			isEnum := false    // Go не имеет перечислений в том же смысле, что и другие языки
 
 			// Определяем вид типа (структура, интерфейс и т.д.)
 			typeNode := current.ChildByFieldName("type")
 			var kind string
 			var properties []*models.Property
+			var methods []*models.Method
+			var parent string
+			var implements []string
+			var genericParameters []string
 
 			if typeNode != nil {
 				kind = typeNode.Type()
@@ -236,14 +274,26 @@ func (p *GoParser) parseType(node *sitter.Node, structure *models.CodeStructure,
 				// Если это структура, извлекаем поля
 				if kind == "struct_type" {
 					properties = p.parseStructFields(typeNode, content)
+				} else if kind == "interface_type" {
+					isInterface = true
+					// TODO: Извлечь методы интерфейса
 				}
 			}
 
 			typ := &models.Type{
-				Name:       name,
-				Kind:       kind,
-				IsPublic:   isPublic,
-				Properties: properties,
+				Name:              name,
+				IsPublic:          isPublic,
+				IsAbstract:        isAbstract,
+				IsInterface:       isInterface,
+				IsMixin:           isMixin,
+				IsGeneric:         isGeneric,
+				IsEnum:            isEnum,
+				Kind:              kind,
+				Parent:            parent,
+				Implements:        implements,
+				GenericParameters: genericParameters,
+				Properties:        properties,
+				Methods:           methods,
 				Position: models.Position{
 					StartLine:   int(current.StartPoint().Row) + 1,
 					StartColumn: int(current.StartPoint().Column) + 1,
@@ -292,11 +342,25 @@ func (p *GoParser) parseParameters(node *sitter.Node, content []byte) []*models.
 			if nameNode != nil && typeNode != nil {
 				name := string(content[nameNode.StartByte():nameNode.EndByte()])
 				typeName := string(content[typeNode.StartByte():typeNode.EndByte()])
+				isRequired := true // В Go все параметры обязательны
+				isVariadic := false
+				isDestructuredObject := false
+				isDestructuredArray := false
+
+				// Проверяем на вариативные параметры (...)
+				if strings.HasPrefix(typeName, "...") {
+					isVariadic = true
+					typeName = strings.TrimPrefix(typeName, "...")
+				}
 
 				param := &models.Parameter{
-					Name:       name,
-					Type:       typeName,
-					IsRequired: true, // В Go все параметры обязательны
+					Name:                 name,
+					Type:                 typeName,
+					IsRequired:           isRequired,
+					DefaultValue:         "", // Go не поддерживает значения по умолчанию
+					IsVariadic:           isVariadic,
+					IsDestructuredObject: isDestructuredObject,
+					IsDestructuredArray:  isDestructuredArray,
 				}
 
 				parameters = append(parameters, param)
@@ -372,11 +436,19 @@ func (p *GoParser) parseStructFields(node *sitter.Node, content []byte) []*model
 				name := string(content[nameNode.StartByte():nameNode.EndByte()])
 				typeName := string(content[typeNode.StartByte():typeNode.EndByte()])
 				isPublic := isPublicName(name)
+				isStatic := false   // Go не имеет статических полей
+				isComputed := false // Go не имеет вычисляемых свойств
+				isPrivate := !isPublic
+				isReadonly := false // TODO: Определить readonly поля
 
 				property := &models.Property{
-					Name:     name,
-					Type:     typeName,
-					IsPublic: isPublic,
+					Name:       name,
+					Type:       typeName,
+					IsPublic:   isPublic,
+					IsStatic:   isStatic,
+					IsComputed: isComputed,
+					IsPrivate:  isPrivate,
+					IsReadonly: isReadonly,
 					Position: models.Position{
 						StartLine:   int(current.StartPoint().Row) + 1,
 						StartColumn: int(current.StartPoint().Column) + 1,

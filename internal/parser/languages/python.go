@@ -41,7 +41,7 @@ func NewPythonParser(cfg *config.Config) parser.Parser { // Возвращаем
 	pyParser := &PythonParser{
 		config: cfg,
 	}
-	pyParser.baseParser = parser.NewTreeSitterParser(GetPythonLanguage(), pyParser.parseTreeNode)
+	pyParser.baseParser = parser.NewTreeSitterParser(GetPythonLanguage(), pyParser.ParseTreeNode)
 	return pyParser
 }
 
@@ -60,8 +60,8 @@ func (p *PythonParser) GetSupportedExtensions() []string {
 	return []string{".py", ".pyw"}
 }
 
-// parseTreeNode разбирает узлы дерева Python кода
-func (p *PythonParser) parseTreeNode(node *sitter.Node, structure *models.CodeStructure, content []byte) error {
+// ParseTreeNode разбирает узлы дерева Python кода
+func (p *PythonParser) ParseTreeNode(node *sitter.Node, structure *models.CodeStructure, content []byte) error {
 	// Рекурсивно обходим дочерние узлы
 	for i := 0; i < int(node.ChildCount()); i++ {
 		child := node.Child(i)
@@ -82,7 +82,7 @@ func (p *PythonParser) parseTreeNode(node *sitter.Node, structure *models.CodeSt
 		default:
 			// Рекурсивно обходим узлы, которые могут содержать нужные декларации
 			if child.ChildCount() > 0 {
-				if err := p.parseTreeNode(child, structure, content); err != nil {
+				if err := p.ParseTreeNode(child, structure, content); err != nil {
 					fmt.Printf("Error parsing child node: %v\n", err) // Заменить на логгер
 				}
 			}
@@ -104,37 +104,43 @@ func (p *PythonParser) parseImport(node *sitter.Node, structure *models.CodeStru
 		currentNode := cursor.CurrentNode()
 		alias := ""
 		path := ""
+		isDynamic := false
+		isNamespace := false
+		isTypeImport := false
 
-		if currentNode.Type() == "dotted_name" { // import module
+		if currentNode.Type() == "dotted_name" {
 			path = currentNode.Content(content)
-			// Проверяем следующий узел на "as"
 			if cursor.GoToNextSibling() && cursor.CurrentNode().Type() == "as" {
 				if cursor.GoToNextSibling() && cursor.CurrentNode().Type() == "identifier" {
 					alias = cursor.CurrentNode().Content(content)
-				} else {
-					continue // Ошибка в структуре `as`
 				}
 			} else {
-				cursor.GoToParent()      // Возвращаемся, чтобы продолжить с этого узла
-				cursor.GoToNextSibling() // Переходим к следующему элементу импорта (если есть)
+				cursor.GoToParent()
+				cursor.GoToNextSibling()
 			}
 			structure.AddImport(&models.Import{
-				Path:     path,
-				Alias:    alias,
-				Position: getNodePosition(currentNode), // Позиция имени модуля
+				Path:         path,
+				Alias:        alias,
+				IsDynamic:    isDynamic,
+				IsNamespace:  isNamespace,
+				IsTypeImport: isTypeImport,
+				Position:     getNodePosition(currentNode),
 			})
-		} else if currentNode.Type() == "aliased_import" { // import module as alias
+		} else if currentNode.Type() == "aliased_import" {
 			nameNode := currentNode.ChildByFieldName("name")
 			aliasNode := currentNode.ChildByFieldName("alias")
 			if nameNode != nil && aliasNode != nil {
 				structure.AddImport(&models.Import{
-					Path:     nameNode.Content(content),
-					Alias:    aliasNode.Content(content),
-					Position: getNodePosition(currentNode),
+					Path:         nameNode.Content(content),
+					Alias:        aliasNode.Content(content),
+					IsDynamic:    isDynamic,
+					IsNamespace:  isNamespace,
+					IsTypeImport: isTypeImport,
+					Position:     getNodePosition(currentNode),
 				})
 			}
 		} else if currentNode.Type() == "," {
-			continue // Пропускаем запятую
+			continue
 		}
 
 		if !cursor.GoToNextSibling() {
@@ -151,7 +157,6 @@ func (p *PythonParser) parseImportFrom(node *sitter.Node, structure *models.Code
 	}
 	modulePath := moduleNameNode.Content(content)
 
-	// Ищем импортируемые имена (dotted_name или aliased_import)
 	cursor := sitter.NewTreeCursor(node)
 	defer cursor.Close()
 	if !cursor.GoToFirstChild() {
@@ -169,17 +174,18 @@ func (p *PythonParser) parseImportFrom(node *sitter.Node, structure *models.Code
 			continue
 		}
 
-		// После 'import' идут импортируемые элементы
-		if currentNode.Type() == "wildcard_import" { // from module import *
+		if currentNode.Type() == "wildcard_import" {
 			structure.AddImport(&models.Import{
-				Path:     modulePath + ".*",
-				Alias:    "*",
-				Position: getNodePosition(currentNode),
+				Path:         modulePath + ".*",
+				Alias:        "*",
+				IsDynamic:    false,
+				IsNamespace:  true,
+				IsTypeImport: false,
+				Position:     getNodePosition(currentNode),
 			})
-		} else if currentNode.Type() == "dotted_name" { // from module import name
+		} else if currentNode.Type() == "dotted_name" {
 			name := currentNode.Content(content)
 			alias := ""
-			// Проверяем следующий узел на 'as'
 			if cursor.GoToNextSibling() && cursor.CurrentNode().Type() == "as" {
 				if cursor.GoToNextSibling() && cursor.CurrentNode().Type() == "identifier" {
 					alias = cursor.CurrentNode().Content(content)
@@ -189,22 +195,28 @@ func (p *PythonParser) parseImportFrom(node *sitter.Node, structure *models.Code
 				cursor.GoToNextSibling()
 			}
 			structure.AddImport(&models.Import{
-				Path:     modulePath + "." + name,
-				Alias:    alias,
-				Position: getNodePosition(currentNode),
+				Path:         modulePath + "." + name,
+				Alias:        alias,
+				IsDynamic:    false,
+				IsNamespace:  false,
+				IsTypeImport: false,
+				Position:     getNodePosition(currentNode),
 			})
-		} else if currentNode.Type() == "aliased_import" { // from module import name as alias
+		} else if currentNode.Type() == "aliased_import" {
 			nameNode := currentNode.ChildByFieldName("name")
 			aliasNode := currentNode.ChildByFieldName("alias")
 			if nameNode != nil && aliasNode != nil {
 				structure.AddImport(&models.Import{
-					Path:     modulePath + "." + nameNode.Content(content),
-					Alias:    aliasNode.Content(content),
-					Position: getNodePosition(currentNode),
+					Path:         modulePath + "." + nameNode.Content(content),
+					Alias:        aliasNode.Content(content),
+					IsDynamic:    false,
+					IsNamespace:  false,
+					IsTypeImport: false,
+					Position:     getNodePosition(currentNode),
 				})
 			}
 		} else if currentNode.Type() == "(" || currentNode.Type() == ")" || currentNode.Type() == "," {
-			continue // Пропускаем скобки и запятые
+			continue
 		}
 
 		if !cursor.GoToNextSibling() {
@@ -219,64 +231,91 @@ func (p *PythonParser) parseFunctionOrMethod(node *sitter.Node, structure *model
 	if nameNode == nil {
 		return
 	}
+
 	funcName := nameNode.Content(content)
-
-	// Определение публичности (начинается с _ или __?)
 	isPublic := !strings.HasPrefix(funcName, "_")
-	isMethod := classModel != nil
-	// В Python self/cls обычно первый параметр метода
-	paramsNode := node.ChildByFieldName("parameters")
-	params := p.parseParameters(paramsNode, content, isMethod)
+	isAsync := false
+	isGenerator := false
+	isArrow := false // Python не имеет стрелочных функций
+	isIIFE := false
 
-	// Тип возвращаемого значения
-	returnType := ""
+	// Проверяем декораторы на async
+	for i := 0; i < int(node.ChildCount()); i++ {
+		child := node.Child(i)
+		if child.Type() == "decorator" {
+			decoratorName := child.ChildByFieldName("name")
+			if decoratorName != nil && decoratorName.Content(content) == "async" {
+				isAsync = true
+			}
+		}
+	}
+
+	// Извлекаем параметры
+	paramsNode := node.ChildByFieldName("parameters")
+	params := p.parseParameters(paramsNode, content)
+
+	// Извлекаем возвращаемый тип (если есть аннотация)
+	var returnType string
 	returnTypeNode := node.ChildByFieldName("return_type")
 	if returnTypeNode != nil {
 		returnType = returnTypeNode.Content(content)
 	}
 
-	startLine, startCol := node.StartPosition().Line, node.StartPosition().Column
-	endLine, endCol := node.EndPosition().Line, node.EndPosition().Column
+	startLine := int(node.StartPoint().Row)
+	startCol := int(node.StartPoint().Column)
+	endLine := int(node.EndPoint().Row)
+	endCol := int(node.EndPoint().Column)
 
-	if isMethod {
+	if classModel != nil {
 		// Это метод класса
 		method := &models.Method{
-			Name:       funcName,
-			IsPublic:   isPublic,
-			IsStatic:   false, // TODO: Определить staticmethod/classmethod декораторы
-			Kind:       "method",
-			BelongsTo:  classModel.Name,
-			Parameters: params,
-			ReturnType: returnType,
+			Name:          funcName,
+			IsPublic:      isPublic,
+			IsAsync:       isAsync,
+			IsGenerator:   isGenerator,
+			IsDecorator:   false, // TODO: Определить декораторы
+			IsConstructor: funcName == "__init__",
+			Kind:          "method",
+			BelongsTo:     classModel.Name,
+			Parameters:    params,
+			ReturnType:    returnType,
 			Position: models.Position{
-				StartLine: int(startLine) + 1,
-				StartCol:  int(startCol) + 1,
-				EndLine:   int(endLine) + 1,
-				EndCol:    int(endCol) + 1,
+				StartLine:   startLine + 1,
+				StartColumn: startCol + 1,
+				EndLine:     endLine + 1,
+				EndColumn:   endCol + 1,
 			},
 		}
 		classModel.Methods = append(classModel.Methods, method)
 	} else {
 		// Это функция верхнего уровня
 		fn := &models.Function{
-			Name:       funcName,
-			IsPublic:   isPublic,
-			Parameters: params,
-			ReturnType: returnType,
+			Name:        funcName,
+			IsPublic:    isPublic,
+			IsAsync:     isAsync,
+			IsGenerator: isGenerator,
+			IsArrow:     isArrow,
+			IsIIFE:      isIIFE,
+			Parameters:  params,
+			ReturnType:  returnType,
 			Position: models.Position{
-				StartLine: int(startLine) + 1,
-				StartCol:  int(startCol) + 1,
-				EndLine:   int(endLine) + 1,
-				EndCol:    int(endCol) + 1,
+				StartLine:   startLine + 1,
+				StartColumn: startCol + 1,
+				EndLine:     endLine + 1,
+				EndColumn:   endCol + 1,
 			},
 		}
 		structure.AddFunction(fn)
-		// Добавляем публичные функции в экспорты модуля
+
+		// Добавляем публичные функции в экспорты
 		if isPublic {
 			structure.AddExport(&models.Export{
-				Name:     fn.Name,
-				Type:     "function",
-				Position: fn.Position,
+				Name:         fn.Name,
+				Type:         "function",
+				IsDefault:    false,
+				IsTypeExport: false,
+				IsNamespace:  false,
+				Position:     fn.Position,
 			})
 		}
 	}
@@ -290,36 +329,71 @@ func (p *PythonParser) parseClass(node *sitter.Node, structure *models.CodeStruc
 	}
 	className := nameNode.Content(content)
 	isPublic := !strings.HasPrefix(className, "_")
+	isAbstract := false
+	isInterface := false
+	isMixin := false
+	isGeneric := false
+	isEnum := false
 
-	// TODO: Извлечь родительские классы (superclasses)
+	// Извлекаем родительские классы
+	var parent string
+	var implements []string
+	argumentsNode := node.ChildByFieldName("arguments")
+	if argumentsNode != nil {
+		cursor := sitter.NewTreeCursor(argumentsNode)
+		defer cursor.Close()
+		if cursor.GoToFirstChild() {
+			for {
+				currentNode := cursor.CurrentNode()
+				if currentNode.Type() == "identifier" {
+					if parent == "" {
+						parent = currentNode.Content(content)
+					} else {
+						implements = append(implements, currentNode.Content(content))
+					}
+				}
+				if !cursor.GoToNextSibling() {
+					break
+				}
+			}
+		}
+	}
 
-	startLine, startCol := node.StartPosition().Line, node.StartPosition().Column
-	endLine, endCol := node.EndPosition().Line, node.EndPosition().Column
+	startLine := int(node.StartPoint().Row)
+	startCol := int(node.StartPoint().Column)
+	endLine := int(node.EndPoint().Row)
+	endCol := int(node.EndPoint().Column)
 
 	classModel := &models.Type{
-		Name:     className,
-		IsPublic: isPublic,
-		Kind:     "class",
+		Name:              className,
+		IsPublic:          isPublic,
+		IsAbstract:        isAbstract,
+		IsInterface:       isInterface,
+		IsMixin:           isMixin,
+		IsGeneric:         isGeneric,
+		IsEnum:            isEnum,
+		Kind:              "class",
+		Parent:            parent,
+		Implements:        implements,
+		GenericParameters: make([]string, 0),
 		Position: models.Position{
-			StartLine: int(startLine) + 1,
-			StartCol:  int(startCol) + 1,
-			EndLine:   int(endLine) + 1,
-			EndCol:    int(endCol) + 1,
+			StartLine:   startLine + 1,
+			StartColumn: startCol + 1,
+			EndLine:     endLine + 1,
+			EndColumn:   endCol + 1,
 		},
 		Methods:    make([]*models.Method, 0),
 		Properties: make([]*models.Property, 0),
 	}
 
-	// Парсим тело класса (блок)
+	// Парсим тело класса
 	bodyNode := node.ChildByFieldName("body")
 	if bodyNode != nil && bodyNode.Type() == "block" {
-		// Обходим узлы внутри блока класса
 		for i := 0; i < int(bodyNode.ChildCount()); i++ {
 			child := bodyNode.Child(i)
 			if child.Type() == "function_definition" {
 				p.parseFunctionOrMethod(child, structure, content, classModel)
 			} else if child.Type() == "assignment" || child.Type() == "typed_assignment" {
-				// TODO: Обработать присваивания внутри класса (атрибуты)
 				p.parseClassAssignment(child, classModel, content)
 			}
 		}
@@ -329,9 +403,12 @@ func (p *PythonParser) parseClass(node *sitter.Node, structure *models.CodeStruc
 	// Добавляем публичные классы в экспорты модуля
 	if isPublic {
 		structure.AddExport(&models.Export{
-			Name:     classModel.Name,
-			Type:     "class",
-			Position: classModel.Position,
+			Name:         classModel.Name,
+			Type:         "class",
+			IsDefault:    false,
+			IsTypeExport: false,
+			IsNamespace:  false,
+			Position:     classModel.Position,
 		})
 	}
 }
@@ -349,18 +426,20 @@ func (p *PythonParser) parseAssignment(node *sitter.Node, structure *models.Code
 		varName := leftNode.Content(content)
 		isPublic := !strings.HasPrefix(varName, "_")
 
-		startLine, startCol := leftNode.StartPosition().Line, leftNode.StartPosition().Column
-		endLine, endCol := leftNode.EndPosition().Line, leftNode.EndPosition().Column
+		startLine := int(leftNode.StartPoint().Row)
+		startCol := int(leftNode.StartPoint().Column)
+		endLine := int(leftNode.EndPoint().Row)
+		endCol := int(leftNode.EndPoint().Column)
 
 		variable := &models.Variable{
 			Name:     varName,
 			IsPublic: isPublic,
 			Type:     "", // TODO: Попытаться извлечь тип из typed_assignment или аннотаций
 			Position: models.Position{
-				StartLine: int(startLine) + 1,
-				StartCol:  int(startCol) + 1,
-				EndLine:   int(endLine) + 1,
-				EndCol:    int(endCol) + 1,
+				StartLine:   startLine + 1,
+				StartColumn: startCol + 1,
+				EndLine:     endLine + 1,
+				EndColumn:   endCol + 1,
 			},
 		}
 		structure.AddVariable(variable)
@@ -381,32 +460,44 @@ func (p *PythonParser) parseAssignment(node *sitter.Node, structure *models.Code
 func (p *PythonParser) parseClassAssignment(node *sitter.Node, classModel *models.Type, content []byte) {
 	leftNode := node.ChildByFieldName("left")
 	if leftNode == nil || leftNode.Type() != "identifier" {
-		return // Интересуют только простые атрибуты вида name = ...
+		return
 	}
 
 	propName := leftNode.Content(content)
 	isPublic := !strings.HasPrefix(propName, "_")
+	isStatic := false
+	isComputed := false
+	isPrivate := strings.HasPrefix(propName, "__")
+	isReadonly := false
 
-	startLine, startCol := leftNode.StartPosition().Line, leftNode.StartPosition().Column
-	endLine, endCol := leftNode.EndPosition().Line, node.EndPosition().Column
+	// TODO: Определить, является ли свойство статическим или readonly
+	// В Python это обычно определяется через декораторы или соглашения
+
+	startLine := int(leftNode.StartPoint().Row)
+	startCol := int(leftNode.StartPoint().Column)
+	endLine := int(node.EndPoint().Row)
+	endCol := int(node.EndPoint().Column)
 
 	prop := &models.Property{
-		Name:     propName,
-		IsPublic: isPublic,
-		IsStatic: false, // Атрибуты экземпляра по умолчанию
-		Type:     "",    // TODO: Извлечь тип из аннотации (typed_assignment)
+		Name:       propName,
+		IsPublic:   isPublic,
+		IsStatic:   isStatic,
+		IsComputed: isComputed,
+		IsPrivate:  isPrivate,
+		IsReadonly: isReadonly,
+		Type:       "", // TODO: Извлечь тип из аннотации
 		Position: models.Position{
-			StartLine: int(startLine) + 1,
-			StartCol:  int(startCol) + 1,
-			EndLine:   int(endLine) + 1,
-			EndCol:    int(endCol) + 1,
+			StartLine:   startLine + 1,
+			StartColumn: startCol + 1,
+			EndLine:     endLine + 1,
+			EndColumn:   endCol + 1,
 		},
 	}
 	classModel.Properties = append(classModel.Properties, prop)
 }
 
 // parseParameters извлекает параметры функции/метода
-func (p *PythonParser) parseParameters(node *sitter.Node, content []byte, isMethod bool) []*models.Parameter {
+func (p *PythonParser) parseParameters(node *sitter.Node, content []byte) []*models.Parameter {
 	params := make([]*models.Parameter, 0)
 	if node == nil || node.Type() != "parameters" {
 		return params
@@ -414,7 +505,7 @@ func (p *PythonParser) parseParameters(node *sitter.Node, content []byte, isMeth
 
 	cursor := sitter.NewTreeCursor(node)
 	defer cursor.Close()
-	if !cursor.GoToFirstChild() { // Пропускаем ( и )
+	if !cursor.GoToFirstChild() {
 		return params
 	}
 
@@ -427,12 +518,11 @@ func (p *PythonParser) parseParameters(node *sitter.Node, content []byte, isMeth
 		isRequired := true
 		isSelfOrCls := false
 
-		// Обрабатываем разные типы параметров: identifier, typed_parameter, default_parameter, etc.
 		nodeType := currentNode.Type()
 
-		if nodeType == "identifier" { // Обычный параметр без типа и значения по умолчанию
+		if nodeType == "identifier" {
 			paramName = currentNode.Content(content)
-		} else if nodeType == "typed_parameter" { // Параметр с типом: name: type
+		} else if nodeType == "typed_parameter" {
 			nameNode := currentNode.ChildByFieldName("name")
 			typeNode := currentNode.ChildByFieldName("type")
 			if nameNode != nil {
@@ -441,11 +531,11 @@ func (p *PythonParser) parseParameters(node *sitter.Node, content []byte, isMeth
 			if typeNode != nil {
 				paramType = typeNode.Content(content)
 			}
-		} else if nodeType == "default_parameter" { // Параметр со значением по умолчанию: name=value или name:type=value
+		} else if nodeType == "default_parameter" {
 			isRequired = false
 			nameNode := currentNode.ChildByFieldName("name")
-			typeNode := currentNode.ChildByFieldName("type")   // Опционально
-			valueNode := currentNode.ChildByFieldName("value") // Обязательно
+			typeNode := currentNode.ChildByFieldName("type")
+			valueNode := currentNode.ChildByFieldName("value")
 			if nameNode != nil {
 				paramName = nameNode.Content(content)
 			}
@@ -455,31 +545,30 @@ func (p *PythonParser) parseParameters(node *sitter.Node, content []byte, isMeth
 			if valueNode != nil {
 				defaultValue = valueNode.Content(content)
 			}
-		} else if nodeType == "list_splat_pattern" || nodeType == "dictionary_splat_pattern" { // *args, **kwargs
-			// Ищем identifier внутри
+		} else if nodeType == "list_splat_pattern" || nodeType == "dictionary_splat_pattern" {
 			nameNode := findFirstChildOfType(currentNode, "identifier")
 			if nameNode != nil {
 				paramName = nameNode.Content(content)
 			}
-			isRequired = false // Обычно не считаются обязательными в сигнатуре
+			isRequired = false
 		} else if nodeType == "," || nodeType == "(" || nodeType == ")" {
-			continue // Пропускаем разделители и скобки
+			continue
 		}
 
-		// Проверяем, является ли первый параметр метода self или cls
-		if isMethod && firstParam && (paramName == "self" || paramName == "cls") {
+		if firstParam && (paramName == "self" || paramName == "cls") {
 			isSelfOrCls = true
 		}
-		firstParam = false // Сбрасываем флаг после первого параметра
+		firstParam = false
 
-		// Добавляем параметр, если это не self/cls
 		if paramName != "" && !isSelfOrCls {
 			params = append(params, &models.Parameter{
-				Name:         paramName,
-				Type:         paramType,
-				IsRequired:   isRequired,
-				DefaultValue: defaultValue,
-				// IsVariadic определить сложнее, зависит от * или ** перед именем
+				Name:                 paramName,
+				Type:                 paramType,
+				IsRequired:           isRequired,
+				DefaultValue:         defaultValue,
+				IsVariadic:           nodeType == "list_splat_pattern" || nodeType == "dictionary_splat_pattern",
+				IsDestructuredObject: false,
+				IsDestructuredArray:  false,
 			})
 		}
 

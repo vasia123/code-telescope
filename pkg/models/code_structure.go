@@ -11,7 +11,10 @@ type CodeStructure struct {
 	// Экспорты файла (публичные интерфейсы)
 	Exports []*Export
 
-	// Все методы/функции файла
+	// Функции верхнего уровня
+	Functions []*Function
+
+	// Методы классов
 	Methods []*Method
 
 	// Типы/классы, определенные в файле
@@ -32,6 +35,15 @@ type Import struct {
 	// Псевдоним импорта (если есть)
 	Alias string
 
+	// Является ли импорт динамическим (import())
+	IsDynamic bool
+
+	// Является ли импорт namespace-импортом
+	IsNamespace bool
+
+	// Является ли импорт type-импортом (TypeScript)
+	IsTypeImport bool
+
 	// Позиция импорта в файле
 	Position Position
 }
@@ -41,14 +53,56 @@ type Export struct {
 	// Имя экспортируемого элемента
 	Name string
 
-	// Тип экспортируемого элемента (функция, класс, переменная и т.д.)
+	// Тип экспортируемого элемента (function, class, variable и т.д.)
 	Type string
+
+	// Является ли экспорт default-экспортом
+	IsDefault bool
+
+	// Является ли экспорт type-экспортом (TypeScript)
+	IsTypeExport bool
+
+	// Является ли экспорт namespace-экспортом
+	IsNamespace bool
 
 	// Позиция экспортируемого элемента в файле
 	Position Position
 }
 
-// Method представляет метод или функцию
+// Function представляет функцию верхнего уровня
+type Function struct {
+	// Имя функции
+	Name string
+
+	// Параметры функции
+	Parameters []*Parameter
+
+	// Тип возвращаемого значения
+	ReturnType string
+
+	// Является ли функция публичной
+	IsPublic bool
+
+	// Является ли функция асинхронной (async)
+	IsAsync bool
+
+	// Является ли функция генератором (function*)
+	IsGenerator bool
+
+	// Является ли функция стрелочной функцией
+	IsArrow bool
+
+	// Является ли функция IIFE (Immediately Invoked Function Expression)
+	IsIIFE bool
+
+	// Позиция функции в файле
+	Position Position
+
+	// Описание функции
+	Description string
+}
+
+// Method представляет метод класса
 type Method struct {
 	// Имя метода
 	Name string
@@ -64,6 +118,21 @@ type Method struct {
 
 	// Является ли метод статическим
 	IsStatic bool
+
+	// Является ли метод асинхронным (async)
+	IsAsync bool
+
+	// Является ли метод генератором (function*)
+	IsGenerator bool
+
+	// Является ли метод декоратором
+	IsDecorator bool
+
+	// Является ли метод конструктором
+	IsConstructor bool
+
+	// Тип метода (method, getter, setter)
+	Kind string
 
 	// Позиция метода в файле
 	Position Position
@@ -88,6 +157,15 @@ type Parameter struct {
 
 	// Является ли параметр обязательным
 	IsRequired bool
+
+	// Является ли параметр вариативным (rest parameter)
+	IsVariadic bool
+
+	// Является ли параметр деструктуризированным объектом
+	IsDestructuredObject bool
+
+	// Является ли параметр деструктуризированным массивом
+	IsDestructuredArray bool
 }
 
 // Type представляет тип или класс
@@ -95,11 +173,26 @@ type Type struct {
 	// Имя типа
 	Name string
 
-	// Тип сущности (класс, интерфейс, структура и т.д.)
+	// Тип сущности (class, interface, struct, enum, etc.)
 	Kind string
 
 	// Является ли публичным
 	IsPublic bool
+
+	// Является ли абстрактным классом
+	IsAbstract bool
+
+	// Является ли интерфейсом
+	IsInterface bool
+
+	// Является ли миксином
+	IsMixin bool
+
+	// Является ли дженериком
+	IsGeneric bool
+
+	// Является ли перечислением (enum)
+	IsEnum bool
 
 	// Позиция в файле
 	Position Position
@@ -112,6 +205,12 @@ type Type struct {
 
 	// Родительский класс/тип (для наследования)
 	Parent string
+
+	// Реализуемые интерфейсы
+	Implements []string
+
+	// Дженерик параметры
+	GenericParameters []string
 }
 
 // Property представляет свойство класса или поле структуры
@@ -124,6 +223,18 @@ type Property struct {
 
 	// Является ли публичным
 	IsPublic bool
+
+	// Является ли статическим
+	IsStatic bool
+
+	// Является ли вычисляемым свойством
+	IsComputed bool
+
+	// Является ли приватным полем
+	IsPrivate bool
+
+	// Является ли readonly
+	IsReadonly bool
 
 	// Позиция в файле
 	Position Position
@@ -180,6 +291,7 @@ func NewCodeStructure(metadata *FileMetadata) *CodeStructure {
 		Metadata:  metadata,
 		Imports:   make([]*Import, 0),
 		Exports:   make([]*Export, 0),
+		Functions: make([]*Function, 0),
 		Methods:   make([]*Method, 0),
 		Types:     make([]*Type, 0),
 		Variables: make([]*Variable, 0),
@@ -197,9 +309,9 @@ func (cs *CodeStructure) AddExport(exp *Export) {
 	cs.Exports = append(cs.Exports, exp)
 }
 
-// AddMethod добавляет метод в структуру кода
-func (cs *CodeStructure) AddMethod(method *Method) {
-	cs.Methods = append(cs.Methods, method)
+// AddFunction добавляет функцию в структуру кода
+func (cs *CodeStructure) AddFunction(fn *Function) {
+	cs.Functions = append(cs.Functions, fn)
 }
 
 // AddType добавляет тип в структуру кода
@@ -215,6 +327,22 @@ func (cs *CodeStructure) AddVariable(variable *Variable) {
 // AddConstant добавляет константу в структуру кода
 func (cs *CodeStructure) AddConstant(constant *Constant) {
 	cs.Constants = append(cs.Constants, constant)
+}
+
+// AddMethod добавляет метод в структуру кода
+func (cs *CodeStructure) AddMethod(method *Method) {
+	cs.Methods = append(cs.Methods, method)
+}
+
+// GetPublicFunctions возвращает только публичные функции
+func (cs *CodeStructure) GetPublicFunctions() []*Function {
+	var publicFunctions []*Function
+	for _, fn := range cs.Functions {
+		if fn.IsPublic {
+			publicFunctions = append(publicFunctions, fn)
+		}
+	}
+	return publicFunctions
 }
 
 // GetPublicMethods возвращает только публичные методы
